@@ -4,6 +4,8 @@
 
 纯 C++17 + Win32 + GDI+ + WASAPI + Media Foundation，**零第三方依赖**，单文件 700KB 出头的绿色程序。
 
+![音乐模式](docs/screenshot_music.png)
+
 ![游戏模式](docs/screenshot_game.png)
 
 ## 功能
