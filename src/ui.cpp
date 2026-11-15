@@ -221,17 +221,22 @@ static void KnobDraw(Graphics& gr, const RECT& rc, float v01, const std::wstring
     gr.FillEllipse(&bfill, (REAL)(cx - ir), (REAL)(cy - ir), ir * 2, ir * 2);
     Pen ring(Color(255, 50, 61, 80), 1.3f);
     gr.DrawEllipse(&ring, (REAL)(cx - ir), (REAL)(cy - ir), ir * 2, ir * 2);
-    SolidBrush bt(COL_TEXT);
-    StringFormat sf; sf.SetAlignment(StringAlignmentCenter); sf.SetLineAlignment(StringAlignmentCenter);
-    gr.DrawString(val.c_str(), (INT)val.size(), A.fTiny,
-                  RectF((REAL)(cx - ir), (REAL)(cy - 9), ir * 2, 18.f), &sf, &bt);
-    const double ang = (135.0 + 270.0 * Clamp01(v01)) * 3.14159265358979 / 180.0;
-    const float px = (float)(cx + cos(ang) * (rad - 1));
-    const float py = (float)(cy + sin(ang) * (rad - 1));
-    SolidBrush bd(hot ? Color(255, 255, 255, 255) : COL_ACC2);
-    gr.FillEllipse(&bd, px - 3.5f, py - 3.5f, 7.f, 7.f);
-    Text(gr, label, A.fTiny, Rc(rc.left, cy + (int)rad + 6, W_(rc), 18),
+    SolidBrush bt(hot ? COL_ACC2 : COL_TEXT);
+    if (rad >= 20.f) {
+        // 大尺寸时在圆内画一个中心点，小尺寸时留空
+        gr.FillEllipse(&bt, (REAL)(cx - 2.f), (REAL)(cy - 2.f), 4.f, 4.f);
+    }
+    if (rad >= 15.f) {
+        const double ang = (135.0 + 270.0 * Clamp01(v01)) * 3.14159265358979 / 180.0;
+        const float px = (float)(cx + cos(ang) * (rad - 2.0));
+        const float py = (float)(cy + sin(ang) * (rad - 2.0));
+        SolidBrush bd(hot ? Color(255, 255, 255, 255) : COL_ACC2);
+        gr.FillEllipse(&bd, px - 3.f, py - 3.f, 6.f, 6.f);
+    }
+    Text(gr, label, A.fTiny, Rc(rc.left, cy + (int)rad + 7, W_(rc), 17),
          hot ? COL_TEXT : COL_DIM, StringAlignmentCenter);
+    Text(gr, val, A.fTiny, Rc(rc.left, cy + (int)rad + 23, W_(rc), 16),
+         hot ? COL_ACCENT : COL_ACC2, StringAlignmentCenter);
 }
 
 // ------------------------------------------------------------------ 布局
@@ -369,10 +374,21 @@ static void ToggleFullscreen() {
     InvalidateRect(A.hwnd, nullptr, FALSE);
 }
 
+static int FirstPresetOfMode(int mode) {
+    for (int i = 0; i < kPresetCount; ++i)
+        if (kPresets[i].mode == mode) return i;
+    return 0;
+}
+
 static void SwitchMode(int mode) {
     if (A.settings.mode == mode) return;
     A.settings.mode = mode;
-    A.settings.applyPreset(mode == MODE_MUSIC ? A.settings.presetMusic : A.settings.presetGame);
+    int idx = (mode == MODE_MUSIC) ? A.settings.presetMusic : A.settings.presetGame;
+    // 防止 ini 里的预设下标属于另一个模式（会导致切模式后又被拉回去）
+    if (idx < 0 || idx >= kPresetCount || kPresets[idx].mode != mode)
+        idx = FirstPresetOfMode(mode);
+    A.settings.applyPreset(idx);
+    A.settings.mode = mode;
     if (!A.bufUserSet) {
         // 游戏模式默认切到超低缓冲，满足 FPS 低延迟需求
         int want = (mode == MODE_GAME) ? 0 : 1;

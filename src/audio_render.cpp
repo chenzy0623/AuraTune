@@ -128,18 +128,25 @@ bool AudioEngine::openRender() {
 
     bool inited = false;
     IAudioClient3* ac3 = nullptr;
-    if (SUCCEEDED(ac->QueryInterface(IID_IAudioClient3L, (void**)&ac3)) && ac3) {
+    HRESULT hrQi = ac->QueryInterface(IID_IAudioClient3L, (void**)&ac3);
+    if (SUCCEEDED(hrQi) && ac3) {
         UINT32 defP = 0, fundP = 0, minP = 0, maxP = 0;
-        if (SUCCEEDED(ac3->GetSharedModeEnginePeriod((WAVEFORMATEX*)&wf, &defP, &fundP, &minP, &maxP))) {
+        HRESULT hrPer = ac3->GetSharedModeEnginePeriod((WAVEFORMATEX*)&wf, &defP, &fundP, &minP, &maxP);
+        DbgLog(L"AC3 period hr=0x%08lX def=%u fund=%u min=%u max=%u\n",
+               (unsigned long)hrPer, defP, fundP, minP, maxP);
+        if (SUCCEEDED(hrPer)) {
             UINT32 period = defP;
             if (bufferMode_ == 0 && minP > 0) period = minP;
             if (period == 0) period = fundP;
-            if (period > 0 &&
-                SUCCEEDED(ac3->InitializeSharedAudioStream(flags, period, (WAVEFORMATEX*)&wf, nullptr))) {
-                inited = true;
+            if (period > 0) {
+                HRESULT hrIni = ac3->InitializeSharedAudioStream(flags, period, (WAVEFORMATEX*)&wf, nullptr);
+                DbgLog(L"AC3 init period=%u hr=0x%08lX\n", period, (unsigned long)hrIni);
+                if (SUCCEEDED(hrIni)) inited = true;
             }
         }
         ac3->Release();
+    } else {
+        DbgLog(L"AC3 QI hr=0x%08lX\n", (unsigned long)hrQi);
     }
     if (!inited) {
         REFERENCE_TIME dur = 100000;     // 10ms
