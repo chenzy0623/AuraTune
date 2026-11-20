@@ -44,6 +44,18 @@ struct Preset {
 extern const Preset kPresets[];
 extern const int    kPresetCount;
 
+// -------------------------------------------------- 用户自定义曲线（可起名、可删除）
+struct CustomPreset {
+    std::wstring name;
+    int   mode = MODE_MUSIC;
+    float eq[kBands] = {};
+    float bass = 0.f, vocal = 0.f, ambience = 0.f, width = 1.f, dynamics = 0.3f;
+    float crossfeed = 0.35f;
+    int   correction = 0;
+};
+
+constexpr int kMaxCustom = 40;
+
 // ------------------------------------------------------------------ 设置
 struct Settings {
     int   mode          = MODE_MUSIC;
@@ -68,7 +80,14 @@ struct Settings {
     std::wstring lastTrack;
     float lastSeek      = 0.0f;
 
+    std::vector<CustomPreset> customs;
+    int   customSel = -1;         // 当前选中的自定义曲线下标（-1 表示选的是内置预设）
+
     void applyPreset(int idx);
+    void applyCustom(int idx);
+    int  addCustom(const std::wstring& name);     // 返回新下标
+    void removeCustom(int idx);
+    int  customCountOf(int mode) const;
     void load();
     void save() const;
 };

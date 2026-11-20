@@ -55,6 +55,16 @@ const Preset kPresets[] = {
       {0.f,0.5f,0.f,-0.8f,0.5f,1.5f,2.2f,1.8f,1.0f,0.5f}, 0.f, 2.2f, 0.4f, 1.10f, 0.40f, 5 },
     { L"通用游戏", L"轻度修形 + 限幅，长时间游玩不累耳", MODE_GAME,
       {0.5f,1.0f,0.5f,0.f,0.f,0.f,0.5f,0.8f,0.5f,0.f}, 0.5f, 0.5f, 0.4f, 1.05f, 0.45f, 2 },
+
+    // ---------------- 3A 单机 ----------------
+    { L"3A 剧情沉浸", L"过场与对话优先：中频贴耳、低频不轰，环境音有层次", MODE_GAME,
+      {1.5f,1.2f,0.6f,0.8f,0.4f,0.8f,1.0f,0.6f,1.0f,1.6f}, 1.2f, 1.2f, 1.6f, 1.42f, 0.20f, 1 },
+    { L"3A 电影低频", L"爆炸、载具、配乐下潜更深，像影院 LFE 补了一层垫底", MODE_GAME,
+      {3.0f,3.2f,1.0f,0.2f,-0.8f,0.f,0.6f,0.8f,1.2f,1.0f}, 3.5f, 0.5f, 1.2f, 1.30f, 0.28f, 3 },
+    { L"3A 大场面动态", L"保留大动态的爆点冲击，又压住爆音，适合《战神》《GTA》《战地》", MODE_GAME,
+      {2.0f,2.4f,0.8f,0.f,-0.6f,0.4f,1.2f,1.6f,1.4f,1.2f}, 2.6f, 1.0f, 1.2f, 1.35f, 0.55f, 2 },
+    { L"3A 深夜通宵", L"深夜低音量玩：等响补偿 + 脚步与语音都留住，不吵到人", MODE_GAME,
+      {1.8f,2.2f,1.2f,0.6f,0.f,0.6f,1.4f,1.4f,1.0f,1.8f}, 2.4f, 1.4f, 1.8f, 1.15f, 0.25f, 3 },
 };
 const int kPresetCount = (int)(sizeof(kPresets) / sizeof(kPresets[0]));
 
@@ -111,6 +121,14 @@ static void WriteFloat(const wchar_t* sec, const wchar_t* key, float v) {
     swprintf(buf, 64, L"%.3f", v);
     WritePrivateProfileStringW(sec, key, buf, SettingsPath().c_str());
 }
+static std::wstring IniStr(const wchar_t* sec, const wchar_t* key, const wchar_t* def) {
+    wchar_t buf[512] = {};
+    GetPrivateProfileStringW(sec, key, def, buf, 511, SettingsPath().c_str());
+    return buf;
+}
+static void WriteStr(const wchar_t* sec, const wchar_t* key, const std::wstring& v) {
+    WritePrivateProfileStringW(sec, key, v.c_str(), SettingsPath().c_str());
+}
 
 void Settings::applyPreset(int idx) {
     if (idx < 0 || idx >= kPresetCount) return;
@@ -120,11 +138,50 @@ void Settings::applyPreset(int idx) {
     width = p.width; dynamics = p.dynamics; correction = p.correction;
     if (p.mode == MODE_MUSIC) presetMusic = idx; else presetGame = idx;
     mode = p.mode;
+    customSel = -1;
+}
+
+// ------------------------------------------------------------ 自定义曲线
+void Settings::applyCustom(int idx) {
+    if (idx < 0 || idx >= (int)customs.size()) return;
+    const CustomPreset& c = customs[idx];
+    for (int b = 0; b < kBands; ++b) eq[b] = c.eq[b];
+    bass = c.bass; vocal = c.vocal; ambience = c.ambience;
+    width = c.width; dynamics = c.dynamics;
+    crossfeed = c.crossfeed; correction = c.correction;
+    mode = c.mode;
+    customSel = idx;
+}
+
+int Settings::addCustom(const std::wstring& name) {
+    if ((int)customs.size() >= kMaxCustom) return -1;
+    CustomPreset c;
+    c.name = name.empty() ? L"我的曲线" : name;
+    c.mode = mode;
+    for (int b = 0; b < kBands; ++b) c.eq[b] = eq[b];
+    c.bass = bass; c.vocal = vocal; c.ambience = ambience;
+    c.width = width; c.dynamics = dynamics;
+    c.crossfeed = crossfeed; c.correction = correction;
+    customs.push_back(c);
+    customSel = (int)customs.size() - 1;
+    return customSel;
+}
+
+void Settings::removeCustom(int idx) {
+    if (idx < 0 || idx >= (int)customs.size()) return;
+    customs.erase(customs.begin() + idx);
+    if (customSel == idx) customSel = -1;
+    else if (customSel > idx) --customSel;
+}
+
+int Settings::customCountOf(int m) const {
+    int n = 0;
+    for (size_t i = 0; i < customs.size(); ++i) if (customs[i].mode == m) ++n;
+    return n;
 }
 
 void Settings::load() {
-    mode          = IniInt(L"ui", L"mode", MODE_MUSIC);
-    presetMusic   = IniInt(L"ui", L"presetMusic", 1);
+    mode          = IniInt(L"ui", L"mode", MODE_MUSIC);    presetMusic   = IniInt(L"ui", L"presetMusic", 1);
     presetGame    = IniInt(L"ui", L"presetGame", 9);
     for (int b = 0; b < kBands; ++b) {
         wchar_t key[16];
@@ -152,6 +209,33 @@ void Settings::load() {
     lastFolder = buf;
     GetPrivateProfileStringW(L"play", L"track", L"", buf, MAX_PATH * 2, SettingsPath().c_str());
     lastTrack = buf;
+
+    // 自定义曲线
+    customs.clear();
+    customSel = -1;
+    int nCustom = IniInt(L"custom", L"count", 0);
+    if (nCustom < 0) nCustom = 0;
+    if (nCustom > kMaxCustom) nCustom = kMaxCustom;
+    for (int i = 0; i < nCustom; ++i) {
+        wchar_t sec[16];
+        swprintf(sec, 16, L"c%d", i);
+        CustomPreset c;
+        c.name = IniStr(sec, L"name", L"我的曲线");
+        c.mode = IniInt(sec, L"mode", MODE_MUSIC);
+        for (int b = 0; b < kBands; ++b) {
+            wchar_t key[16];
+            swprintf(key, 16, L"eq%d", b);
+            c.eq[b] = IniFloat(sec, key, 0.f);
+        }
+        c.bass      = IniFloat(sec, L"bass", 1.f);
+        c.vocal     = IniFloat(sec, L"vocal", 0.5f);
+        c.ambience  = IniFloat(sec, L"ambience", 0.6f);
+        c.width     = IniFloat(sec, L"width", 1.05f);
+        c.dynamics  = IniFloat(sec, L"dynamics", 0.3f);
+        c.crossfeed = IniFloat(sec, L"crossfeed", 0.35f);
+        c.correction= IniInt(sec, L"correction", 0);
+        customs.push_back(c);
+    }
 }
 
 void Settings::save() const {
@@ -180,6 +264,28 @@ void Settings::save() const {
     WriteFloat(L"play", L"seek", lastSeek);
     WritePrivateProfileStringW(L"play", L"folder", lastFolder.c_str(), SettingsPath().c_str());
     WritePrivateProfileStringW(L"play", L"track", lastTrack.c_str(), SettingsPath().c_str());
+
+    // 自定义曲线
+    WriteFloat(L"custom", L"count", (float)customs.size());
+    for (size_t i = 0; i < customs.size(); ++i) {
+        wchar_t sec[16];
+        swprintf(sec, 16, L"c%d", (int)i);
+        const CustomPreset& c = customs[i];
+        WriteStr(sec, L"name", c.name);
+        WriteFloat(sec, L"mode", (float)c.mode);
+        for (int b = 0; b < kBands; ++b) {
+            wchar_t key[16];
+            swprintf(key, 16, L"eq%d", b);
+            WriteFloat(sec, key, c.eq[b]);
+        }
+        WriteFloat(sec, L"bass", c.bass);
+        WriteFloat(sec, L"vocal", c.vocal);
+        WriteFloat(sec, L"ambience", c.ambience);
+        WriteFloat(sec, L"width", c.width);
+        WriteFloat(sec, L"dynamics", c.dynamics);
+        WriteFloat(sec, L"crossfeed", c.crossfeed);
+        WriteFloat(sec, L"correction", (float)c.correction);
+    }
 }
 
 std::wstring FormatTime(double sec) {

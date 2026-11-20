@@ -32,13 +32,13 @@ static const Color COL_RED   (255, 255, 96, 96);
 // ------------------------------------------------------------------ 控件 id
 enum : int {
     ID_NONE = 0, ID_MIN = 1, ID_CLOSE = 2, ID_MAX = 3, ID_FULL = 4,
+    ID_SAVE = 5, ID_DEL = 6, ID_NAME = 7,
     ID_TAB_MUSIC = 10, ID_TAB_GAME = 11,
     ID_PRESET0 = 100,
     ID_CORR = 200, ID_CORRITEM0 = 210,
     ID_EQ0 = 300,
     ID_KNOB0 = 400,
-    ID_XF = 500, ID_VOL = 501, ID_SEEK = 502,
-    ID_PLAY = 600, ID_OPEN = 601,
+    ID_XF = 500, ID_VOL = 501,
     ID_BUF0 = 700, ID_CAP = 710, ID_APO = 720
 };
 
@@ -46,16 +46,16 @@ struct Layout {
     RECT topbar;
     RECT tabMusic, tabGame, btnMin, btnClose, btnMax, btnFull;
     RECT presetPanel, corrPanel, gamePanel, corrBox;
-    int  presetIdx[64] = {}; int presetN = 0;
-    RECT presetRow[64];
+    RECT nameBox, saveBtn, delBtn;
+    int  presetRef[64] = {}; int presetKind[64] = {}; int presetN = 0;
     int  presetRowH = 36, presetListTop = 134, presetVisible = 0, presetScroll = 0;
     bool presetTwoLine = true;
     RECT capBtn, bufBtn[3], apoBtn;
     RECT eqPanel;
     int  eqColW = 40; int eqTop = 0, eqBot = 0;
-    RECT knobPanel, specPanel, transport;
+    RECT knobPanel, specPanel;
     RECT knob[5];
-    RECT xf, volSlider, seekBar, playBtn, openBtn;
+    RECT xf, volSlider;
     int  leftW = 316;
 };
 
@@ -63,7 +63,8 @@ struct App {
     HWND hwnd = nullptr;
     HDC  memdc = nullptr;
     HBITMAP membmp = nullptr;
-    int  W = 1240, H = 780;
+    int  memW = 0, memH = 0;
+    int  W = 1200, H = 675;
     Layout lay;
 
     Settings    settings;
@@ -81,6 +82,11 @@ struct App {
     DWORD detectedPid = 0;
     bool capturing = false;
     bool autoSwitched = false;
+
+    std::wstring customName = L"我的曲线";
+    bool nameEdit = false;
+    bool saveDirty = false;
+    DWORD saveAt = 0;
 
     std::wstring toast;
     DWORD toastUntil = 0;
@@ -102,6 +108,7 @@ struct App {
 };
 
 static App A;
+
 static const wchar_t* kWndClass = L"AuraTuneMainWnd";
 static const UINT WM_TRAY = WM_APP + 1;
 static const UINT_PTR TIMER_UI = 1;
@@ -247,37 +254,41 @@ static void RebuildLayout(App& a) {
     L.tabMusic = Rc(232, 19, 92, 36);
     L.tabGame  = Rc(330, 19, 92, 36);
     L.btnFull  = Rc(W - 240, 20, 92, 34);
-    L.btnMax   = Rc(W - 138, 20, 34, 34);
-    L.btnMin   = Rc(W - 96, 20, 34, 34);
+    // Win10 同款顺序：最小化 → 最大化 → 关闭
+    L.btnMin   = Rc(W - 138, 20, 34, 34);
+    L.btnMax   = Rc(W - 96, 20, 34, 34);
     L.btnClose = Rc(W - 54, 20, 34, 34);
 
     const int lx = 24, leftW = 316;
     L.leftW = leftW;
 
-    L.transport = Rc(24, H - 24 - 64, W - 48, 64);
     const int midTop = 92;
-    const int bottomLimit = L.transport.top - 12;
+    const int bottomLimit = H - 24;
     const int availH = std::max(360, bottomLimit - midTop);
 
+    // 预设列表：内置预设 + 自定义曲线（当前模式）
     int n = 0;
-    for (int i = 0; i < kPresetCount; ++i)
-        if (kPresets[i].mode == a.settings.mode) L.presetIdx[n++] = i;
+    for (int i = 0; i < kPresetCount && n < 64; ++i)
+        if (kPresets[i].mode == a.settings.mode) { L.presetRef[n] = i; L.presetKind[n] = 0; ++n; }
+    for (int i = 0; i < (int)a.settings.customs.size() && n < 64; ++i)
+        if (a.settings.customs[i].mode == a.settings.mode) { L.presetRef[n] = i; L.presetKind[n] = 1; ++n; }
     L.presetN = n;
 
     // 左列：预设（自适应）+ 校正 + 游戏卡
     const int corrH = 88;
     const int cardH = (availH >= 470) ? 150 : 132;
+    const int customRowH = 40;                 // 自定义曲线的名字框 + 保存/删除
     int presetH = availH - corrH - 12 - cardH - 12;
-    if (presetH < 84) presetH = 84;
+    if (presetH < 120) presetH = 120;
     L.presetPanel = Rc(lx, midTop, leftW, presetH);
     L.presetListTop = midTop + 40;
     {
-        const int listH = presetH - 48;
-        int rowH = (n > 0) ? (listH / n) : 36;
-        if (rowH > 36) rowH = 36;
-        if (rowH < 22) rowH = 22;
+        const int listH = presetH - 48 - customRowH;
+        int rowH = (n > 0) ? (listH / n) : 34;
+        if (rowH > 34) rowH = 34;
+        if (rowH < 20) rowH = 20;
         L.presetRowH = rowH;
-        L.presetTwoLine = (rowH >= 32);
+        L.presetTwoLine = (rowH >= 30);
         L.presetVisible = (rowH > 0) ? (listH / rowH) : 0;
         if (L.presetVisible > n) L.presetVisible = n;
         const int maxScroll = std::max(0, n - L.presetVisible);
@@ -285,7 +296,12 @@ static void RebuildLayout(App& a) {
         if (a.presetScroll < 0) a.presetScroll = 0;
         L.presetScroll = a.presetScroll;
     }
-    for (int k = 0; k < 64; ++k) L.presetRow[k] = Rc(0, 0, 0, 0);
+    {
+        const int ry = L.presetPanel.bottom - 34;
+        L.nameBox = Rc(lx + 10, ry, leftW - 126, 26);
+        L.saveBtn = Rc(lx + leftW - 112, ry, 54, 26);
+        L.delBtn  = Rc(lx + leftW - 52, ry, 44, 26);
+    }
 
     L.corrPanel = Rc(lx, L.presetPanel.bottom + 12, leftW, corrH);
     L.corrBox   = Rc(lx + 12, L.corrPanel.top + 42, leftW - 24, 34);
@@ -301,10 +317,10 @@ static void RebuildLayout(App& a) {
     const int rx = lx + leftW + 16;
     const int rw = W - rx - 24;
 
-    int knobH = (availH >= 560) ? 152 : 130;
-    int specH = (availH >= 560) ? 96 : 76;
+    int knobH = (availH >= 560) ? 152 : 132;
+    int specH = (availH >= 560) ? 168 : 124;   // 电平框加高到正常尺寸
     int eqH = availH - knobH - specH - 24;
-    if (eqH < 180) { eqH = 180; specH = std::max(60, availH - eqH - knobH - 24); }
+    if (eqH < 210) { eqH = 210; specH = std::max(96, availH - eqH - knobH - 24); }
 
     L.eqPanel = Rc(rx, midTop, rw, eqH);
     L.eqColW  = std::max(18, (rw - 44) / kBands);
@@ -315,18 +331,14 @@ static void RebuildLayout(App& a) {
     {
         const int kw = rw / 5;
         for (int i = 0; i < 5; ++i)
-            L.knob[i] = Rc(rx + i * kw, L.knobPanel.top + 22, kw, knobH - 44);
-        L.xf = Rc(rx + rw - 176, L.knobPanel.bottom - 26, 150, 18);
+            L.knob[i] = Rc(rx + i * kw, L.knobPanel.top + 22, kw, knobH - 46);
+        const int by = L.knobPanel.bottom - 24;
+        L.xf        = Rc(rx + 58, by, 128, 16);
+        L.volSlider = Rc(rx + rw - 176, by, 160, 16);
     }
 
     const int sy = L.knobPanel.bottom + 12;
     L.specPanel = Rc(rx, sy, rw, std::max(56, bottomLimit - sy));
-
-    L.openBtn = Rc(L.transport.left + 14, L.transport.top + 14, 96, 36);
-    L.playBtn = Rc(L.transport.left + 122, L.transport.top + 14, 44, 36);
-    const int seekW = std::max(110, rw - 620);
-    L.seekBar = Rc(L.transport.left + 176, L.transport.top + 34, seekW, 18);
-    L.volSlider = Rc(L.transport.right - 206, L.transport.top + 26, 116, 18);
 }
 
 // ------------------------------------------------------------------ 应用动作
@@ -340,7 +352,16 @@ static void ApplyToEngine() {
     A.engine.setVolumePercent(A.settings.volumePercent);
 }
 
+// 写 ini 很慢（每个键都是一次文件重写），改成延迟合并写，避免调参/切模式时卡顿
 static void SaveSettings() {
+    A.saveDirty = true;
+    A.saveAt = GetTickCount() + 700;
+}
+
+static void FlushSave() {
+    if (!A.saveDirty) return;
+    if (GetTickCount() < A.saveAt) return;
+    A.saveDirty = false;
     A.settings.save();
 }
 
@@ -358,9 +379,11 @@ static void ToggleFullscreen() {
         MONITORINFO mi{};
         mi.cbSize = sizeof(mi);
         if (!GetMonitorInfoW(MonitorFromWindow(A.hwnd, MONITOR_DEFAULTTONEAREST), &mi)) return;
+        // 用 rcWork 而不是 rcMonitor：任务栏要露出来
+        RECT wa = mi.rcWork;
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
         SetWindowLongPtrW(A.hwnd, GWL_STYLE, (A.prevStyle | WS_POPUP) & ~(WS_THICKFRAME | WS_MAXIMIZEBOX));
-        SetWindowPos(A.hwnd, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
-                     mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top,
+        SetWindowPos(A.hwnd, HWND_TOP, wa.left, wa.top, wa.right - wa.left, wa.bottom - wa.top,
                      SWP_FRAMECHANGED | SWP_SHOWWINDOW);
         A.fullscreen = true;
         Toast(L"全屏：按 Esc 或 F11 退出");
@@ -371,6 +394,7 @@ static void ToggleFullscreen() {
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
         A.fullscreen = false;
     }
+    RebuildLayout(A);
     InvalidateRect(A.hwnd, nullptr, FALSE);
 }
 
@@ -390,23 +414,72 @@ static void SwitchMode(int mode) {
     A.settings.applyPreset(idx);
     A.settings.mode = mode;
     if (!A.bufUserSet) {
-        // 游戏模式默认切到超低缓冲，满足 FPS 低延迟需求
-        int want = (mode == MODE_GAME) ? 0 : 1;
+        // 游戏模式默认切到超低缓冲，满足 FPS 低延迟需求；缓冲没变就不要重开音频流（重开会卡一下）
+        const int want = (mode == MODE_GAME) ? 0 : 1;
         if (want != A.bufMode) {
             A.bufMode = want;
             A.engine.setBufferMode(want);
             A.engine.requestReconnect();
         }
     }
+    A.corrOpen = false;
+    A.presetScroll = 0;
     ApplyToEngine();
     SaveSettings();
     RebuildLayout(A);
+    InvalidateRect(A.hwnd, nullptr, FALSE);
 }
 
 static void ApplyPresetIndex(int idx) {
     A.settings.applyPreset(idx);
     ApplyToEngine();
     SaveSettings();
+    InvalidateRect(A.hwnd, nullptr, FALSE);
+}
+
+// 把当前 EQ + 旋钮 + 校正存成一条自定义曲线
+static void SaveAsCustom() {
+    std::wstring nm = A.customName;
+    while (!nm.empty() && (nm.back() == L' ' || nm.back() == L'\t')) nm.pop_back();
+    if (nm.empty()) {
+        wchar_t d[64];
+        swprintf(d, 64, L"我的曲线 %d", (int)A.settings.customs.size() + 1);
+        nm = d;
+    }
+    const int idx = A.settings.addCustom(nm);
+    if (idx < 0) { Toast(L"自定义曲线已达上限 40 条"); return; }
+    A.settings.applyCustom(idx);
+    A.settings.mode = (A.settings.mode == MODE_GAME) ? MODE_GAME : MODE_MUSIC;
+    ApplyToEngine();
+    SaveSettings();
+    RebuildLayout(A);
+    InvalidateRect(A.hwnd, nullptr, FALSE);
+    std::wstring msg = L"已保存曲线：";
+    msg += nm;
+    Toast(msg);
+}
+
+static void DeleteSelectedCustom() {
+    const int idx = A.settings.customSel;
+    if (idx < 0 || idx >= (int)A.settings.customs.size()) {
+        Toast(L"请先在列表里选中一条自定义曲线（★ 开头）");
+        return;
+    }
+    std::wstring nm = A.settings.customs[idx].name;
+    const int mode = A.settings.customs[idx].mode;
+    A.settings.removeCustom(idx);
+    if (A.settings.mode == mode) {
+        const int fb = FirstPresetOfMode(mode);
+        A.settings.applyPreset(fb);
+        A.settings.mode = mode;
+        ApplyToEngine();
+    }
+    SaveSettings();
+    RebuildLayout(A);
+    InvalidateRect(A.hwnd, nullptr, FALSE);
+    std::wstring msg = L"已删除曲线：";
+    msg += nm;
+    Toast(msg);
 }
 
 static bool EquaApoInstalled(std::wstring* cfgPath) {
@@ -456,21 +529,6 @@ static void ExportApo() {
     ShellExecuteW(A.hwnd, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
-static void OpenFileDialog() {
-    wchar_t file[MAX_PATH] = {};
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = A.hwnd;
-    ofn.lpstrFile = file;
-    ofn.nMaxFile = MAX_PATH;
-    ofn.lpstrFilter = L"音频文件\0*.mp3;*.flac;*.wav;*.m4a;*.aac;*.wma;*.ogg\0所有文件\0*.*\0";
-    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-    if (!GetOpenFileNameW(&ofn)) return;
-    A.engine.openFile(file);
-    A.settings.lastTrack = file;
-    SaveSettings();
-}
-
 static void ToggleCapture() {
     if (A.capturing) {
         A.engine.stopCapture();
@@ -487,9 +545,14 @@ static void ToggleCapture() {
 // ------------------------------------------------------------------ 绘制
 static void Paint(App& a) {
     HDC dc = GetDC(a.hwnd);
-    if (a.memdc) { DeleteObject(a.membmp); DeleteDC(a.memdc); }
-    a.memdc = CreateCompatibleDC(dc);
-    a.membmp = CreateCompatibleBitmap(dc, a.W, a.H);
+    // 后台缓冲只在尺寸变化时重建（每帧重建会明显掉帧）
+    if (!a.memdc || a.memW != a.W || a.memH != a.H) {
+        if (a.memdc) { DeleteObject(a.membmp); DeleteDC(a.memdc); a.memdc = nullptr; a.membmp = nullptr; }
+        a.memdc = CreateCompatibleDC(dc);
+        a.membmp = CreateCompatibleBitmap(dc, a.W, a.H);
+        a.memW = a.W;
+        a.memH = a.H;
+    }
     SelectObject(a.memdc, a.membmp);
     gHits.clear();
 
@@ -542,6 +605,9 @@ static void Paint(App& a) {
 
             wchar_t lat[128];
             const float lms = a.engine.latencyMs();
+            {
+                static int once = 0;
+            }
             if (a.capturing && lms > 0) swprintf(lat, 128, L"输出 %.1f ms · 端到端约 %.1f ms", lms, lms + 11.f);
             else if (lms > 0)          swprintf(lat, 128, L"输出延迟 %.1f ms", lms);
             else                       swprintf(lat, 128, L"输出延迟 --");
@@ -584,31 +650,68 @@ static void Paint(App& a) {
             Hit(ID_CLOSE, L.btnClose);
         }
 
-        // ---------------- 预设（自适应行高 + 溢出滚动）
-        Panel(gr, L.presetPanel, game ? L"游戏预设" : L"音乐预设");
+        // ---------------- 预设（内置 + 自定义，自适应行高 + 溢出滚动）
+        Panel(gr, L.presetPanel, game ? L"游戏预设 / 曲线" : L"音乐预设 / 曲线");
         for (int k = 0; k < L.presetVisible; ++k) {
-            const int pi = L.presetIdx[k + L.presetScroll];
-            if (pi < 0 || pi >= kPresetCount) continue;
-            const int cur = game ? s.presetGame : s.presetMusic;
-            const bool on = (pi == cur);
+            const int slot = k + L.presetScroll;
+            const int kind = L.presetKind[slot];
+            const int ref  = L.presetRef[slot];
+            bool on = false;
+            std::wstring name, desc;
+            if (kind == 0) {
+                if (ref < 0 || ref >= kPresetCount) continue;
+                on = (ref == (game ? s.presetGame : s.presetMusic)) && s.customSel < 0;
+                name = kPresets[ref].name;
+                desc = kPresets[ref].desc;
+            } else {
+                if (ref < 0 || ref >= (int)s.customs.size()) continue;
+                on = (s.customSel == ref);
+                name = L"★ ";
+                name += s.customs[ref].name;
+                desc = L"我的自定义曲线 · 可继续微调";
+            }
             RECT rr = Rc(L.presetPanel.left + 10, L.presetListTop + k * L.presetRowH, L.leftW - 20, L.presetRowH - 4);
             if (on) {
                 FillRound(gr, rr, 8, Color(255, 33, 45, 68));
                 SolidBrush acc(COL_ACCENT);
                 gr.FillRectangle(&acc, (REAL)rr.left, (REAL)(rr.top + 4), 3.f, (REAL)(H_(rr) - 8));
-            } else if (a.hot == ID_PRESET0 + pi) {
+            } else if (a.hot == (kind == 0 ? ID_PRESET0 + ref : ID_PRESET0 + 1000 + ref)) {
                 FillRound(gr, rr, 8, Color(90, 42, 50, 68));
             }
+            const Color nameCol = on ? COL_TEXT : (kind == 1 ? Color(255, 168, 214, 205) : Color(255, 202, 210, 222));
             if (L.presetTwoLine) {
-                Text(gr, kPresets[pi].name, on ? a.fBold : a.fBody,
-                     Rc(rr.left + 12, rr.top + 1, W_(rr) - 24, H_(rr) / 2), on ? COL_TEXT : Color(255, 202, 210, 222));
-                Text(gr, kPresets[pi].desc, a.fTiny,
+                Text(gr, name, on ? a.fBold : a.fBody,
+                     Rc(rr.left + 12, rr.top + 1, W_(rr) - 24, H_(rr) / 2), nameCol);
+                Text(gr, desc, a.fTiny,
                      Rc(rr.left + 12, rr.top + H_(rr) / 2 - 2, W_(rr) - 24, H_(rr) / 2), COL_DIM);
             } else {
-                Text(gr, kPresets[pi].name, on ? a.fSmallBold : a.fSmall, rr,
-                     on ? COL_TEXT : Color(255, 202, 210, 222));
+                Text(gr, name, on ? a.fSmallBold : a.fSmall, rr, nameCol);
             }
-            Hit(ID_PRESET0 + pi, rr);
+            Hit(kind == 0 ? ID_PRESET0 + ref : ID_PRESET0 + 1000 + ref, rr);
+        }
+
+        // ---------------- 自定义曲线：名字框 + 保存 + 删除
+        {
+            FillRound(gr, L.nameBox, 7, a.nameEdit ? Color(255, 35, 43, 58) : COL_PANEL2);
+            StrokeRound(gr, L.nameBox, 7, a.nameEdit ? COL_ACCENT : (a.hot == ID_NAME ? COL_LINE : Color(255, 34, 42, 54)));
+            const std::wstring shown = a.customName.empty() ? std::wstring(L"给新曲线起个名字…") : a.customName;
+            Text(gr, shown, a.fSmall, Rc(L.nameBox.left + 8, L.nameBox.top, W_(L.nameBox) - 12, H_(L.nameBox)),
+                 a.customName.empty() ? Color(255, 96, 106, 122) : COL_TEXT);
+            if (a.nameEdit && (GetTickCount() / 500) % 2 == 0) {
+                const int wpx = (int)(a.customName.size() * 7.2f);
+                const int cx = std::min(L.nameBox.right - 6, L.nameBox.left + 8 + wpx);
+                FillRectC(gr, COL_ACCENT, (REAL)cx, (REAL)(L.nameBox.top + 6), 1.6f, (REAL)(H_(L.nameBox) - 12));
+            }
+            Hit(ID_NAME, L.nameBox);
+
+            FillRound(gr, L.saveBtn, 7, a.hot == ID_SAVE ? Color(255, 44, 96, 168) : Color(255, 36, 66, 118));
+            Text(gr, L"保存", a.fTiny, L.saveBtn, COL_TEXT, StringAlignmentCenter, StringAlignmentCenter, false);
+            Hit(ID_SAVE, L.saveBtn);
+
+            FillRound(gr, L.delBtn, 7, a.hot == ID_DEL ? Color(255, 140, 52, 52) : Color(255, 46, 38, 42));
+            Text(gr, L"删除", a.fTiny, L.delBtn, a.hot == ID_DEL ? COL_RED : Color(255, 214, 150, 150),
+                 StringAlignmentCenter, StringAlignmentCenter, false);
+            Hit(ID_DEL, L.delBtn);
         }
 
         // ---------------- 校正
@@ -743,9 +846,17 @@ static void Paint(App& a) {
                          a.active == ID_KNOB0 + i || a.hot == ID_KNOB0 + i);
                 Hit(ID_KNOB0 + i, L.knob[i]);
             }
-            Text(gr, L"串扰", a.fTiny, Rc(L.xf.left - 44, L.xf.top - 2, 44, 20), COL_DIM);
+            Text(gr, L"串扰", a.fTiny, Rc(L.xf.left - 46, L.xf.top - 2, 44, 18), COL_DIM, StringAlignmentFar);
             HSlider(gr, L.xf, s.crossfeed, a.hot == ID_XF || a.active == ID_XF);
             Hit(ID_XF, L.xf);
+
+            {
+                wchar_t vv[24];
+                swprintf(vv, 24, L"音量 %d%%", s.volumePercent);
+                Text(gr, vv, a.fTiny, Rc(L.volSlider.left - 82, L.volSlider.top - 2, 76, 18), COL_DIM, StringAlignmentFar);
+            }
+            HSlider(gr, L.volSlider, s.volumePercent / 100.f, a.hot == ID_VOL || a.active == ID_VOL);
+            Hit(ID_VOL, Rc(L.volSlider.left, L.volSlider.top - 6, W_(L.volSlider), H_(L.volSlider) + 12));
         }
 
         // ---------------- 频谱
@@ -761,8 +872,6 @@ static void Paint(App& a) {
                     const int hgt = (int)(v * (bot - top));
                     if (hgt <= 0) continue;
                     RECT br = Rc(L.specPanel.left + pad + i * bw + 1, bot - hgt, std::max(2, bw - 2), hgt);
-                    LinearGradientBrush lg(Point(br.left, bot), Point(br.left, top),
-                                           Color(255, 54, 211, 191), Color(255, 78, 141, 255));
                     const double tt = (double)hgt / (double)(bot - top);
                     Color c1 = Color(255, (BYTE)(54 + 100 * tt), (BYTE)(211 - 60 * tt), (BYTE)(191 + 60 * tt));
                     SolidBrush sb(c1);
@@ -774,49 +883,6 @@ static void Paint(App& a) {
                 if (h1 > 0) FillRectC(gr, Color(255, 78, 141, 255), (REAL)(mx - 12), (REAL)(bot - h1), 5.f, (REAL)h1);
                 if (h2 > 0) FillRectC(gr, Color(255, 54, 211, 191), (REAL)(mx - 5), (REAL)(bot - h2), 5.f, (REAL)h2);
             }
-        }
-
-        // ---------------- 传输条
-        {
-            FillRound(gr, L.transport, 12, COL_PANEL);
-            StrokeRound(gr, L.transport, 12, COL_LINE);
-
-            FillRound(gr, L.openBtn, 9, a.hot == ID_OPEN ? Color(255, 41, 53, 75) : COL_PANEL2);
-            Text(gr, L"打开文件", a.fSmall, L.openBtn, COL_TEXT, StringAlignmentCenter, StringAlignmentCenter, false);
-            Hit(ID_OPEN, L.openBtn);
-
-            FillRound(gr, L.playBtn, 9, a.hot == ID_PLAY ? Color(255, 96, 156, 255) : COL_ACCENT);
-            if (a.engine.isPlaying()) {
-                FillRectC(gr, Color(255, 255, 255, 255), (REAL)(L.playBtn.left + 15), (REAL)(L.playBtn.top + 12), 5.f, 12.f);
-                FillRectC(gr, Color(255, 255, 255, 255), (REAL)(L.playBtn.left + 25), (REAL)(L.playBtn.top + 12), 5.f, 12.f);
-            } else {
-                Point pts[3] = { Point(L.playBtn.left + 16, L.playBtn.top + 11),
-                                 Point(L.playBtn.left + 32, L.playBtn.top + 18),
-                                 Point(L.playBtn.left + 16, L.playBtn.top + 25) };
-                FillPolyC(gr, Color(255, 255, 255, 255), pts, 3);
-            }
-            Hit(ID_PLAY, L.playBtn);
-
-            std::wstring title = a.engine.title();
-            if (title.empty()) title = L"未加载曲目 · 拖入音频文件";
-            Text(gr, title, a.fTiny, Rc(L.transport.left + 176, L.transport.top + 6, W_(L.seekBar), 18),
-                 a.engine.hasTrack() ? COL_DIM : Color(255, 100, 110, 126));
-
-            const double dur = a.engine.duration();
-            const float prog = dur > 0 ? (float)(a.engine.position() / dur) : 0.f;
-            HSlider(gr, L.seekBar, prog, a.hot == ID_SEEK || a.active == ID_SEEK);
-            Hit(ID_SEEK, Rc(L.seekBar.left, L.seekBar.top - 6, W_(L.seekBar), H_(L.seekBar) + 12));
-
-            wchar_t tb[80];
-            swprintf(tb, 80, L"%s / %s", FormatTime(a.engine.position()).c_str(), FormatTime(dur).c_str());
-            Text(gr, tb, a.fTiny, Rc(L.seekBar.right + 12, L.seekBar.top - 2, 140, 20), COL_DIM);
-
-            Text(gr, L"音量", a.fTiny, Rc(L.volSlider.left, L.volSlider.top - 14, 60, 16), COL_DIM);
-            HSlider(gr, L.volSlider, s.volumePercent / 100.f, a.hot == ID_VOL || a.active == ID_VOL);
-            Hit(ID_VOL, Rc(L.volSlider.left, L.volSlider.top - 6, W_(L.volSlider), H_(L.volSlider) + 12));
-            wchar_t vv[16];
-            swprintf(vv, 16, L"%d", s.volumePercent);
-            Text(gr, vv, a.fTiny, Rc(L.volSlider.right + 6, L.volSlider.top, 34, 18), COL_DIM);
         }
 
         // ---------------- 校正下拉
@@ -836,7 +902,7 @@ static void Paint(App& a) {
 
         // ---------------- 提示
         if (!a.toast.empty() && GetTickCount() < a.toastUntil) {
-            RECT tr = Rc(a.W / 2 - 240, a.H - 136, 480, 34);
+            RECT tr = Rc(a.W / 2 - 240, a.H - 74, 480, 34);
             FillRound(gr, tr, 10, Color(242, 30, 38, 52));
             StrokeRound(gr, tr, 10, COL_ACCENT);
             Text(gr, a.toast, a.fSmall, tr, COL_TEXT, StringAlignmentCenter, StringAlignmentCenter, false);
@@ -869,14 +935,19 @@ static void OnDown(int x, int y) {
     A.active = id;
     const Layout& L = A.lay;
 
-    if (id >= ID_EQ0 && id < ID_EQ0 + kBands) {
+    if (id != ID_NAME) {
+        A.nameEdit = false;
+        if (A.customName.empty()) A.customName = L"我的曲线";
+    }
+    if (id == ID_NAME) {
+        if (!A.nameEdit) { A.customName.clear(); A.nameEdit = true; }  // 首次点进来先清空，直接打新名字
+        SetFocus(A.hwnd);
+        InvalidateRect(A.hwnd, nullptr, FALSE);
+    } else if (id >= ID_EQ0 && id < ID_EQ0 + kBands) {
         SetEqFromY(id - ID_EQ0, y);
     } else if (id == ID_VOL) {
         A.settings.volumePercent = (int)(Clamp01((float)(x - L.volSlider.left) / (float)W_(L.volSlider)) * 100.f);
         A.engine.setVolumePercent(A.settings.volumePercent);
-    } else if (id == ID_SEEK) {
-        const double dur = A.engine.duration();
-        if (dur > 0) A.engine.seekTo(Clamp01((float)(x - L.seekBar.left) / (float)W_(L.seekBar)) * dur);
     } else if (id == ID_XF) {
         A.settings.crossfeed = Clamp01((float)(x - L.xf.left) / (float)W_(L.xf));
         ApplyToEngine();
@@ -904,10 +975,6 @@ static void OnMove(int x, int y, bool down) {
     } else if (id == ID_VOL) {
         A.settings.volumePercent = (int)(Clamp01((float)(x - L.volSlider.left) / (float)W_(L.volSlider)) * 100.f);
         A.engine.setVolumePercent(A.settings.volumePercent);
-        InvalidateRect(A.hwnd, nullptr, FALSE);
-    } else if (id == ID_SEEK) {
-        const double dur = A.engine.duration();
-        if (dur > 0) A.engine.seekTo(Clamp01((float)(x - L.seekBar.left) / (float)W_(L.seekBar)) * dur);
         InvalidateRect(A.hwnd, nullptr, FALSE);
     } else if (id == ID_XF) {
         A.settings.crossfeed = Clamp01((float)(x - L.xf.left) / (float)W_(L.xf));
@@ -951,6 +1018,20 @@ static void OnUp(int x, int y) {
             SwitchMode(MODE_MUSIC);
         } else if (id == ID_TAB_GAME) {
             SwitchMode(MODE_GAME);
+        } else if (id == ID_NAME) {
+            A.nameEdit = true;
+        } else if (id == ID_SAVE) {
+            SaveAsCustom();
+        } else if (id == ID_DEL) {
+            DeleteSelectedCustom();
+        } else if (id >= ID_PRESET0 + 1000 && id < ID_PRESET0 + 1000 + 64) {
+            const int ci = id - (ID_PRESET0 + 1000);
+            if (ci >= 0 && (int)ci < (int)A.settings.customs.size()) {
+                A.settings.applyCustom(ci);
+                ApplyToEngine();
+                SaveSettings();
+                InvalidateRect(A.hwnd, nullptr, FALSE);
+            }
         } else if (id >= ID_PRESET0 && id < ID_PRESET0 + 64) {
             const int k = id - ID_PRESET0;
             if (k >= 0 && k < kPresetCount) {
@@ -966,10 +1047,6 @@ static void OnUp(int x, int y) {
                 SaveSettings();
             }
             A.corrOpen = false;
-        } else if (id == ID_PLAY) {
-            A.engine.togglePlay();
-        } else if (id == ID_OPEN) {
-            OpenFileDialog();
         } else if (id == ID_CAP) {
             ToggleCapture();
         } else if (id == ID_APO) {
@@ -1075,7 +1152,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     switch (msg) {
     case WM_CREATE: {
         A.hwnd = hwnd;
-        DragAcceptFiles(hwnd, TRUE);
         SetTimer(hwnd, TIMER_UI, 16, nullptr);
         return 0;
     }
@@ -1116,11 +1192,37 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     case WM_GETMINMAXINFO: {
         MINMAXINFO* mm = (MINMAXINFO*)lParam;
         mm->ptMinTrackSize.x = 960;
-        mm->ptMinTrackSize.y = 600;
+        mm->ptMinTrackSize.y = 620;
+        return 0;
+    }
+    case WM_CHAR: {
+        if (!A.nameEdit) break;
+        const wchar_t c = (wchar_t)wParam;
+        if (c == 8 || c == 127) {
+            if (!A.customName.empty()) A.customName.pop_back();
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        if (c == 27) { A.nameEdit = false; InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+        if (c == L'\r') { A.nameEdit = false; SaveAsCustom(); return 0; }
+        if (c >= 32 && A.customName.size() < 20) {
+            A.customName.push_back(c);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
         return 0;
     }
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN: {
+        if (A.nameEdit) {
+            if (wParam == VK_RETURN) { A.nameEdit = false; SaveAsCustom(); return 0; }
+            if (wParam == VK_ESCAPE) { A.nameEdit = false; InvalidateRect(hwnd, nullptr, FALSE); return 0; }
+            if (wParam == VK_BACK) {
+                if (!A.customName.empty()) A.customName.pop_back();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            return 0;
+        }
         if (wParam == VK_F11) { if (IsZoomed(hwnd)) ShowWindow(hwnd, SW_RESTORE); ToggleFullscreen(); return 0; }
         if (wParam == VK_ESCAPE && A.fullscreen) { ToggleFullscreen(); return 0; }
         if (wParam == VK_RETURN && (GetKeyState(VK_MENU) & 0x8000)) { ToggleFullscreen(); return 0; }
@@ -1207,20 +1309,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
     }
     case WM_DROPFILES: {
-        HDROP hd = (HDROP)wParam;
-        wchar_t path[MAX_PATH] = {};
-        if (DragQueryFileW(hd, 0, path, MAX_PATH)) {
-            A.engine.openFile(path);
-            A.settings.lastTrack = path;
-            SaveSettings();
-        }
-        DragFinish(hd);
+        DragFinish((HDROP)wParam);
+        Toast(L"这个版本不再内置播放器，请用你的音乐软件放歌");
         return 0;
     }
     case WM_TIMER: {
         if (wParam != TIMER_UI) break;
         static int tick = 0;
         ++tick;
+
+        FlushSave();
 
         MeterData m = A.engine.meter();
         A.meterL = A.meterL * 0.6f + std::min(1.f, m.rmsL * 3.2f) * 0.4f;
@@ -1237,9 +1335,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (tick % 120 == 0) {
             DWORD pid = 0;
             std::wstring gname = DetectRunningGame(&pid);
-            if (gname != A.detectedGame) {
+            if (gname != A.detectedGame || pid != A.detectedPid) {
                 A.detectedGame = gname;
                 A.detectedPid = pid;
+                InvalidateRect(hwnd, nullptr, FALSE);
             }
             if (A.settings.autoSwitch) {
                 if (!gname.empty() && A.settings.mode == MODE_MUSIC) {
@@ -1251,7 +1350,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
                 }
             }
         }
-        InvalidateRect(hwnd, nullptr, FALSE);
+        // 只重画频谱和提示条，别整窗重画（切模式/拖旋钮才整体重画）
+        {
+            RECT sp = A.lay.specPanel;
+            InflateRect(&sp, 2, 2);
+            InvalidateRect(hwnd, &sp, FALSE);
+            RECT tb = Rc(A.W / 2 - 244, A.H - 78, 488, 42);
+            InvalidateRect(hwnd, &tb, FALSE);
+        }
         return 0;
     }
     case WM_TRAY:
@@ -1289,7 +1395,6 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
-// ------------------------------------------------------------------ 启动
 int RunAuraTune(HINSTANCE hInst) {
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
@@ -1316,13 +1421,15 @@ int RunAuraTune(HINSTANCE hInst) {
     RegisterClassExW(&wc);
 
     RECT wa{}; SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
-    int maxW = (wa.right - wa.left) - 48;
-    int maxH = (wa.bottom - wa.top) - 24;
-    A.W = 1240; A.H = 780;
-    if (A.W > maxW) A.W = maxW;
-    if (A.H > maxH) A.H = maxH;
-    if (A.W < 960) A.W = 960;
-    if (A.H < 620) A.H = 620;
+    const int maxW = (wa.right - wa.left) - 40;
+    const int maxH = (wa.bottom - wa.top) - 40;
+    // 默认按 16:9 给一个正常比例，再按工作区夹取（不贴满、不超屏）
+    int dw = 1200, dh = 675;
+    if (dw > maxW) { dw = maxW; dh = dw * 9 / 16; }
+    if (dh > maxH) { dh = maxH; dw = dh * 16 / 9; }
+    if (dw < 960) dw = 960;
+    if (dh < 620) dh = 620;
+    A.W = dw; A.H = dh;
     RECT wr{ 0, 0, A.W, A.H };
     AdjustWindowRectEx(&wr, WS_OVERLAPPEDWINDOW, FALSE, 0);
     const int ww = wr.right - wr.left, wh = wr.bottom - wr.top;
@@ -1348,9 +1455,11 @@ int RunAuraTune(HINSTANCE hInst) {
     ApplyToEngine();
     A.engine.setBufferMode(A.bufMode);
 
-    if (!A.settings.lastTrack.empty()) {
-        A.engine.openFile(A.settings.lastTrack);
-        A.engine.setVolumePercent(A.settings.volumePercent);
+    // 自动曲线名从已有序号往后排
+    if (!A.settings.customs.empty()) {
+        wchar_t d[64];
+        swprintf(d, 64, L"我的曲线 %d", (int)A.settings.customs.size() + 1);
+        A.customName = d;
     }
 
     // 居中
