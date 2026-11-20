@@ -44,7 +44,7 @@ enum : int {
 
 struct Layout {
     RECT topbar;
-    RECT tabMusic, tabGame, btnMin, btnClose, btnMax, btnFull;
+    RECT tabMusic, tabGame, btnMin, btnClose, btnMax;
     RECT presetPanel, corrPanel, gamePanel, corrBox;
     RECT nameBox, saveBtn, delBtn;
     int  presetRef[64] = {}; int presetKind[64] = {}; int presetN = 0;
@@ -253,7 +253,6 @@ static void RebuildLayout(App& a) {
     L.topbar = Rc(0, 0, W, 76);
     L.tabMusic = Rc(232, 19, 92, 36);
     L.tabGame  = Rc(330, 19, 92, 36);
-    L.btnFull  = Rc(W - 240, 20, 92, 34);
     // Win10 同款顺序：最小化 → 最大化 → 关闭
     L.btnMin   = Rc(W - 138, 20, 34, 34);
     L.btnMax   = Rc(W - 96, 20, 34, 34);
@@ -373,6 +372,7 @@ static void ToggleMaximize() {
 static void ToggleFullscreen() {
     if (!A.hwnd) return;
     if (!A.fullscreen) {
+        if (IsIconic(A.hwnd)) ShowWindow(A.hwnd, SW_RESTORE);   // 从最小化直接进全屏也要先恢复
         A.prevPl.length = sizeof(A.prevPl);
         GetWindowPlacement(A.hwnd, &A.prevPl);
         A.prevStyle = GetWindowLongPtrW(A.hwnd, GWL_STYLE);
@@ -633,15 +633,6 @@ static void Paint(App& a) {
                 }
             }
             Hit(ID_MAX, L.btnMax);
-
-            {
-                const bool fs = (a.fullscreen != 0);
-                FillRound(gr, L.btnFull, 8, fs ? Color(255, 33, 45, 68)
-                                              : (a.hot == ID_FULL ? COL_PANEL2 : Color(0, 0, 0, 0)));
-                Text(gr, fs ? L"退出全屏" : L"全屏 ▢", a.fTiny, L.btnFull,
-                     fs ? COL_TEXT : (a.hot == ID_FULL ? COL_TEXT : COL_DIM), StringAlignmentCenter);
-            }
-            Hit(ID_FULL, L.btnFull);
 
             FillRound(gr, L.btnClose, 8, a.hot == ID_CLOSE ? Color(255, 130, 44, 44) : Color(0, 0, 0, 0));
             Pen pc(a.hot == ID_CLOSE ? Color(255, 255, 220, 220) : COL_DIM, 1.6f);
@@ -1011,9 +1002,6 @@ static void OnUp(int x, int y) {
         } else if (id == ID_MAX) {
             if (A.fullscreen) ToggleFullscreen();
             ToggleMaximize();
-        } else if (id == ID_FULL) {
-            if (IsZoomed(A.hwnd)) ShowWindow(A.hwnd, SW_RESTORE);
-            ToggleFullscreen();
         } else if (id == ID_TAB_MUSIC) {
             SwitchMode(MODE_MUSIC);
         } else if (id == ID_TAB_GAME) {
