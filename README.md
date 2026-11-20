@@ -4,6 +4,17 @@
 
 纯 C++17 + Win32 + GDI+ + WASAPI + Media Foundation，**零第三方依赖**，单文件 700KB 出头的绿色程序。
 
+## 下载（直接可运行）
+
+不想编译的话直接下发布包：
+
+| 文件 | 说明 |
+| --- | --- |
+| [`AuraTune_v1.1_win64.zip`](https://github.com/chenzy0623/AuraTune/releases/download/v1.1/AuraTune_v1.1_win64.zip) | 完整包：`AuraTune.exe` + 使用说明 + 交付说明 + README + LICENSE + `apo\` 文件夹，**解压即用** |
+| [`AuraTune.exe`](https://github.com/chenzy0623/AuraTune/releases/download/v1.1/AuraTune.exe) | 只想要程序本体：单文件绿色版，双击运行 |
+
+发布页：<https://github.com/chenzy0623/AuraTune/releases/latest> · 系统要求 Windows 10 2004+ / Windows 11，64 位。
+
 ![音乐模式](docs/screenshot_music.png)
 
 ![游戏模式](docs/screenshot_game.png)
