@@ -3,3 +3,4 @@ build/
 *.exe
 *.ini
 test/*.wav
+build_asan/

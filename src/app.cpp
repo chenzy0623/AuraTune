@@ -2,9 +2,77 @@
 #include <shlwapi.h>
 #include <tlhelp32.h>
 #include <cwchar>
+#include <cmath>
 
 const float kBandFreq[kBands] = { 31.f, 62.f, 125.f, 250.f, 500.f, 1000.f, 2000.f, 4000.f, 8000.f, 16000.f };
 const wchar_t* kBandLabel[kBands] = { L"31", L"62", L"125", L"250", L"500", L"1k", L"2k", L"4k", L"8k", L"16k" };
+
+// ---------------------------------------------------------------- 图形 EQ 频段表
+static const float kFreq10[kBands] = { 31.f, 62.f, 125.f, 250.f, 500.f, 1000.f, 2000.f, 4000.f, 8000.f, 16000.f };
+static const float kFreq15[15] = {
+    25.f, 40.f, 63.f, 100.f, 160.f, 250.f, 400.f, 630.f,
+    1000.f, 1600.f, 2500.f, 4000.f, 6300.f, 10000.f, 16000.f };
+static const float kFreq31[31] = {
+    20.f, 25.f, 31.5f, 40.f, 50.f, 63.f, 80.f, 100.f,
+    125.f, 160.f, 200.f, 250.f, 315.f, 400.f, 500.f, 630.f,
+    800.f, 1000.f, 1250.f, 1600.f, 2000.f, 2500.f, 3150.f, 4000.f,
+    5000.f, 6300.f, 8000.f, 10000.f, 12500.f, 16000.f, 20000.f };
+
+const float* BandFreqs(int count, int* n) {
+    if (count == 15) { if (n) *n = 15; return kFreq15; }
+    if (count == 31) { if (n) *n = 31; return kFreq31; }
+    if (n) *n = kBands;
+    return kFreq10;
+}
+
+float BandFreqAt(int count, int i) {
+    int n = 0;
+    const float* t = BandFreqs(count, &n);
+    if (i < 0) i = 0;
+    if (i >= n) i = n - 1;
+    return t[i];
+}
+
+const wchar_t* BandLabel(int count, int i) {
+    static wchar_t buf[32];
+    float f = BandFreqAt(count, i);
+    if (f >= 1000.f) {
+        if (f >= 10000.f)      swprintf(buf, 32, L"%.0fk", f / 1000.f);
+        else if (f == (float)(int)f && (int)f % 1000 == 0) swprintf(buf, 32, L"%.0fk", f / 1000.f);
+        else                   swprintf(buf, 32, L"%.1fk", f / 1000.f);
+    } else if (f >= 100.f) {
+        swprintf(buf, 32, L"%.0f", f);
+    } else {
+        swprintf(buf, 32, L"%.0f", f);
+    }
+    return buf;
+}
+
+float EqGainAt(const float* eq, int count, float f) {
+    int n = 0;
+    const float* t = BandFreqs(count, &n);
+    if (!eq || n <= 0) return 0.f;
+    if (f <= t[0]) return eq[0];
+    if (f >= t[n - 1]) return eq[n - 1];
+    for (int i = 0; i + 1 < n; ++i) {
+        if (f >= t[i] && f <= t[i + 1]) {
+            float lf = logf(f);
+            float l0 = logf(t[i]), l1 = logf(t[i + 1]);
+            float k = (l1 > l0) ? (lf - l0) / (l1 - l0) : 0.f;
+            return eq[i] + (eq[i + 1] - eq[i]) * k;
+        }
+    }
+    return eq[n - 1];
+}
+
+// ---------------------------------------------------------------- 名称表
+const wchar_t* kParamTypeName[] = {
+    L"峰值 Peak", L"低架 LowShelf", L"高架 HighShelf", L"低通 LowPass",
+    L"高通 HighPass", L"陷波 Notch", L"全通 AllPass", L"带通 BandPass" };
+const wchar_t* kCompModeName[] = { L"关闭", L"柔和", L"中等", L"强力" };
+const wchar_t* kSpatialModeName[] = { L"关闭", L"8D 环绕", L"10D 影院", L"8 字漂移" };
+const wchar_t* kTestToneName[] = { L"关闭", L"正弦", L"粉噪", L"扫频" };
+
 
 // 耳机校正曲线（AutoEq 风格目标曲线的近似值，供没有测量文件的用户快速对齐听感）
 const Correction kCorrections[] = {
@@ -133,7 +201,10 @@ static void WriteStr(const wchar_t* sec, const wchar_t* key, const std::wstring&
 void Settings::applyPreset(int idx) {
     if (idx < 0 || idx >= kPresetCount) return;
     const Preset& p = kPresets[idx];
-    for (int b = 0; b < kBands; ++b) eq[b] = p.eq[b];
+    // 预设固定是 10 段曲线；当前段数不同时按对数频率插值映射过去
+    for (int b = 0; b < eqCount && b < kMaxBands; ++b)
+        eq[b] = EqGainAt(p.eq, kBands, BandFreqAt(eqCount, b));
+    for (int b = eqCount; b < kMaxBands; ++b) eq[b] = 0.f;
     bass = p.bass; vocal = p.vocal; ambience = p.ambience;
     width = p.width; dynamics = p.dynamics; correction = p.correction;
     if (p.mode == MODE_MUSIC) presetMusic = idx; else presetGame = idx;
@@ -141,11 +212,26 @@ void Settings::applyPreset(int idx) {
     customSel = -1;
 }
 
+// 切换图形 EQ 段数，并把当前曲线按对数频率重采样到新段数
+void Settings::setEqCount(int count) {
+    if (count != 10 && count != 15 && count != 31) count = kBands;
+    if (count == eqCount) return;
+    static float old[kMaxBands];
+    int oldCount = eqCount;
+    for (int b = 0; b < kMaxBands; ++b) old[b] = eq[b];
+    eqCount = count;
+    for (int b = 0; b < eqCount; ++b)
+        eq[b] = EqGainAt(old, oldCount, BandFreqAt(eqCount, b));
+    for (int b = eqCount; b < kMaxBands; ++b) eq[b] = 0.f;
+}
+
 // ------------------------------------------------------------ 自定义曲线
 void Settings::applyCustom(int idx) {
     if (idx < 0 || idx >= (int)customs.size()) return;
     const CustomPreset& c = customs[idx];
-    for (int b = 0; b < kBands; ++b) eq[b] = c.eq[b];
+    eqCount = (c.eqCount == 15 || c.eqCount == 31) ? c.eqCount : kBands;
+    for (int b = 0; b < kMaxBands; ++b) eq[b] = c.eq[b];
+    for (int b = eqCount; b < kMaxBands; ++b) eq[b] = 0.f;
     bass = c.bass; vocal = c.vocal; ambience = c.ambience;
     width = c.width; dynamics = c.dynamics;
     crossfeed = c.crossfeed; correction = c.correction;
@@ -158,7 +244,8 @@ int Settings::addCustom(const std::wstring& name) {
     CustomPreset c;
     c.name = name.empty() ? L"我的曲线" : name;
     c.mode = mode;
-    for (int b = 0; b < kBands; ++b) c.eq[b] = eq[b];
+    c.eqCount = eqCount;
+    for (int b = 0; b < kMaxBands; ++b) c.eq[b] = eq[b];
     c.bass = bass; c.vocal = vocal; c.ambience = ambience;
     c.width = width; c.dynamics = dynamics;
     c.crossfeed = crossfeed; c.correction = correction;
@@ -183,11 +270,14 @@ int Settings::customCountOf(int m) const {
 void Settings::load() {
     mode          = IniInt(L"ui", L"mode", MODE_MUSIC);    presetMusic   = IniInt(L"ui", L"presetMusic", 1);
     presetGame    = IniInt(L"ui", L"presetGame", 9);
-    for (int b = 0; b < kBands; ++b) {
+    eqCount       = IniInt(L"dsp", L"eqCount", kBands);
+    if (eqCount != 10 && eqCount != 15 && eqCount != 31) eqCount = kBands;
+    for (int b = 0; b < eqCount && b < kMaxBands; ++b) {
         wchar_t key[16];
         swprintf(key, 16, L"eq%d", b);
-        eq[b] = IniFloat(L"eq", key, kPresets[1].eq[b]);
+        eq[b] = IniFloat(L"eq", key, b < kBands ? kPresets[1].eq[b] : 0.f);
     }
+    for (int b = eqCount; b < kMaxBands; ++b) eq[b] = 0.f;
     bass          = IniFloat(L"dsp", L"bass", 1.5f);
     vocal         = IniFloat(L"dsp", L"vocal", 0.5f);
     ambience      = IniFloat(L"dsp", L"ambience", 0.8f);
@@ -195,20 +285,55 @@ void Settings::load() {
     dynamics      = IniFloat(L"dsp", L"dynamics", 0.30f);
     crossfeed     = IniFloat(L"dsp", L"crossfeed", 0.35f);
     correction    = IniInt(L"dsp", L"correction", 1);
+    preamp        = IniFloat(L"dsp", L"preamp", 0.f);
     vol           = IniFloat(L"dsp", L"vol", 0.f);
     balance       = IniFloat(L"dsp", L"balance", 0.f);
     bypass        = IniInt(L"dsp", L"bypass", 0) != 0;
+    xoFreq        = IniFloat(L"dsp", L"xoFreq", 0.f);
+    subGain       = IniFloat(L"dsp", L"subGain", 0.f);
+    compMode      = IniInt(L"dsp", L"compMode", COMP_OFF);
+    spatialMode   = IniInt(L"dsp", L"spatialMode", SP_OFF);
+    spatialRate   = IniFloat(L"dsp", L"spatialRate", 0.12f);
+    spatialDepth  = IniFloat(L"dsp", L"spatialDepth", 0.5f);
+    irOn          = IniInt(L"dsp", L"irOn", 0) != 0;
+    irMix         = IniFloat(L"dsp", L"irMix", 1.f);
+    testTone      = IniInt(L"dsp", L"testTone", TT_OFF);
+    testFreq      = IniFloat(L"dsp", L"testFreq", 1000.f);
+    testLevel     = IniFloat(L"dsp", L"testLevel", -20.f);
+    musicPid      = IniInt(L"music", L"pid", 0);
+    autoCapture   = IniInt(L"music", L"autoCapture", 1) != 0;
     volumePercent = IniInt(L"play", L"volume", 80);
     autoSwitch    = IniInt(L"ui", L"autoSwitch", 1) != 0;
     startMinimized= IniInt(L"ui", L"startMinimized", 0) != 0;
     closeToTray   = IniInt(L"ui", L"closeToTray", 1) != 0;
     lastSeek      = IniFloat(L"play", L"seek", 0.f);
 
+    // 参量均衡器
+    for (int i = 0; i < kMaxParams; ++i) {
+        wchar_t sec[16];
+        swprintf(sec, 16, L"p%d", i);
+        params[i].on   = IniInt(sec, L"on", 0) != 0;
+        params[i].type = IniInt(sec, L"type", PT_PEAK);
+        if (params[i].type < 0 || params[i].type >= kParamTypeCount) params[i].type = PT_PEAK;
+        params[i].freq = IniFloat(sec, L"freq", 1000.f);
+        params[i].gain = IniFloat(sec, L"gain", 0.f);
+        params[i].q    = IniFloat(sec, L"q", 1.0f);
+    }
+
     wchar_t buf[MAX_PATH * 2] = {};
     GetPrivateProfileStringW(L"play", L"folder", L"", buf, MAX_PATH * 2, SettingsPath().c_str());
     lastFolder = buf;
     GetPrivateProfileStringW(L"play", L"track", L"", buf, MAX_PATH * 2, SettingsPath().c_str());
     lastTrack = buf;
+    irPath = IniStr(L"dsp", L"irPath", L"");
+    musicApp = IniStr(L"music", L"app", L"");
+    musicLabel = IniStr(L"music", L"label", L"");
+    inDevId    = IniStr(L"music", L"inId", L"");
+    inDevName  = IniStr(L"music", L"inName", L"");
+    outDevId   = IniStr(L"music", L"outId", L"");
+    outDevName = IniStr(L"music", L"outName", L"");
+    defaultMoved = IniInt(L"music", L"defaultMoved", 0) != 0;
+    prevDefaultId = IniStr(L"music", L"prevDefault", L"");
 
     // 自定义曲线
     customs.clear();
@@ -222,7 +347,9 @@ void Settings::load() {
         CustomPreset c;
         c.name = IniStr(sec, L"name", L"我的曲线");
         c.mode = IniInt(sec, L"mode", MODE_MUSIC);
-        for (int b = 0; b < kBands; ++b) {
+        c.eqCount = IniInt(sec, L"eqCount", kBands);
+        if (c.eqCount != 10 && c.eqCount != 15 && c.eqCount != 31) c.eqCount = kBands;
+        for (int b = 0; b < c.eqCount && b < kMaxBands; ++b) {
             wchar_t key[16];
             swprintf(key, 16, L"eq%d", b);
             c.eq[b] = IniFloat(sec, key, 0.f);
@@ -239,10 +366,27 @@ void Settings::load() {
 }
 
 void Settings::save() const {
+    // 首次写 ini 时先落 UTF-16LE BOM：这样 WritePrivateProfileStringW 会按 Unicode 写，
+    // 中文预设名/设备名不会因为系统代码页而变成乱码。
+    {
+        const std::wstring path = SettingsPath();
+        HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f == INVALID_HANDLE_VALUE) {
+            f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (f != INVALID_HANDLE_VALUE) {
+                const wchar_t bom = 0xFEFF;
+                DWORD wrote = 0;
+                WriteFile(f, &bom, sizeof(bom), &wrote, nullptr);
+            }
+        }
+        if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
+    }
     WriteFloat(L"ui", L"mode",        (float)mode);
     WriteFloat(L"ui", L"presetMusic", (float)presetMusic);
     WriteFloat(L"ui", L"presetGame",  (float)presetGame);
-    for (int b = 0; b < kBands; ++b) {
+    WriteFloat(L"dsp", L"eqCount", (float)eqCount);
+    for (int b = 0; b < eqCount; ++b) {
         wchar_t key[16];
         swprintf(key, 16, L"eq%d", b);
         WriteFloat(L"eq", key, eq[b]);
@@ -254,9 +398,41 @@ void Settings::save() const {
     WriteFloat(L"dsp", L"dynamics", dynamics);
     WriteFloat(L"dsp", L"crossfeed", crossfeed);
     WriteFloat(L"dsp", L"correction", (float)correction);
+    WriteFloat(L"dsp", L"preamp", preamp);
     WriteFloat(L"dsp", L"vol", vol);
     WriteFloat(L"dsp", L"balance", balance);
     WriteFloat(L"dsp", L"bypass", bypass ? 1.f : 0.f);
+    WriteFloat(L"dsp", L"xoFreq", xoFreq);
+    WriteFloat(L"dsp", L"subGain", subGain);
+    WriteFloat(L"dsp", L"compMode", (float)compMode);
+    WriteFloat(L"dsp", L"spatialMode", (float)spatialMode);
+    WriteFloat(L"dsp", L"spatialRate", spatialRate);
+    WriteFloat(L"dsp", L"spatialDepth", spatialDepth);
+    WriteFloat(L"dsp", L"irOn", irOn ? 1.f : 0.f);
+    WriteFloat(L"dsp", L"irMix", irMix);
+    WriteFloat(L"dsp", L"testTone", (float)testTone);
+    WriteFloat(L"dsp", L"testFreq", testFreq);
+    WriteFloat(L"dsp", L"testLevel", testLevel);
+    WriteFloat(L"music", L"pid", (float)musicPid);
+    WriteFloat(L"music", L"autoCapture", autoCapture ? 1.f : 0.f);
+    WriteStr(L"dsp", L"irPath", irPath);
+    WriteStr(L"music", L"app", musicApp);
+    WriteStr(L"music", L"label", musicLabel);
+    WriteStr(L"music", L"inId", inDevId);
+    WriteStr(L"music", L"inName", inDevName);
+    WriteStr(L"music", L"outId", outDevId);
+    WriteStr(L"music", L"outName", outDevName);
+    WriteFloat(L"music", L"defaultMoved", defaultMoved ? 1.f : 0.f);
+    WriteStr(L"music", L"prevDefault", prevDefaultId);
+    for (int i = 0; i < kMaxParams; ++i) {
+        wchar_t sec[16];
+        swprintf(sec, 16, L"p%d", i);
+        WriteFloat(sec, L"on", params[i].on ? 1.f : 0.f);
+        WriteFloat(sec, L"type", (float)params[i].type);
+        WriteFloat(sec, L"freq", params[i].freq);
+        WriteFloat(sec, L"gain", params[i].gain);
+        WriteFloat(sec, L"q", params[i].q);
+    }
     WriteFloat(L"play", L"volume", (float)volumePercent);
     WriteFloat(L"ui", L"autoSwitch", autoSwitch ? 1.f : 0.f);
     WriteFloat(L"ui", L"startMinimized", startMinimized ? 1.f : 0.f);
@@ -273,7 +449,8 @@ void Settings::save() const {
         const CustomPreset& c = customs[i];
         WriteStr(sec, L"name", c.name);
         WriteFloat(sec, L"mode", (float)c.mode);
-        for (int b = 0; b < kBands; ++b) {
+        WriteFloat(sec, L"eqCount", (float)c.eqCount);
+        for (int b = 0; b < c.eqCount && b < kMaxBands; ++b) {
             wchar_t key[16];
             swprintf(key, 16, L"eq%d", b);
             WriteFloat(sec, key, c.eq[b]);

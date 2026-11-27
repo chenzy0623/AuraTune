@@ -9,7 +9,7 @@ if exist "D:\llvm-mingw\bin\g++.exe" set GXX=D:\llvm-mingw\bin\g++.exe
 if not exist build mkdir build
 
 echo [1/2] compiling sources with %GXX%
-for %%F in (app audio audio_render audio_decode audio_capture dsp ui main) do (
+for %%F in (app audio audio_render audio_decode audio_capture audio_sessions dsp ui main) do (
     echo    %%F.cpp
     %GXX% -std=c++17 -O2 -c src\%%F.cpp -o build\%%F.o || goto :err
 )

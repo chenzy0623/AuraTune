@@ -88,7 +88,9 @@ extern "C++" HRESULT ActivateProcessLoopbackClient(DWORD pid, void** out) {
 
     ActivateHandler* h = new ActivateHandler();
     IActivateAudioInterfaceAsyncOperation* op = nullptr;
-    HRESULT hr = ActivateAudioInterfaceAsync(L"VAD\\Process_Loopback", IID_IAudioClient3_L, &pv, h, &op);
+    // 用 IID_IAudioClient 激活：进程回环只保证返回 IAudioClient，
+    // 传 IID_IAudioClient3 在部分系统上会返回 E_ILLEGAL_METHOD_CALL(0x8000000E)。
+    HRESULT hr = ActivateAudioInterfaceAsync(L"VAD\\Process_Loopback", __uuidof(IAudioClient), &pv, h, &op);
     if (SUCCEEDED(hr)) {
         WaitForSingleObject(h->ev, 4000);
         hr = h->hr;
@@ -96,7 +98,11 @@ extern "C++" HRESULT ActivateProcessLoopbackClient(DWORD pid, void** out) {
     }
     if (op) op->Release();
     h->Release();
-    PropVariantClear(&pv);
+    // 注意：绝不能对指向栈上数据的 VT_BLOB 调 PropVariantClear()
+    // —— 它会 CoTaskMemFree 这个栈地址，造成堆损坏（0xC0000374）。
+    pv.vt = VT_EMPTY;
+    pv.blob.pBlobData = nullptr;
+    pv.blob.cbSize = 0;
     return hr;
 }
 
@@ -272,6 +278,7 @@ bool AudioEngine::startCapture(DWORD pid, const std::wstring& label) {
     stopCapture();
     if (pid == 0) return false;
     capPid_ = pid;
+    capDevId_.clear();
     {
         std::lock_guard<std::mutex> lk(titleMtx_);
         capLabel_ = label;
@@ -288,6 +295,27 @@ bool AudioEngine::startCapture(DWORD pid, const std::wstring& label) {
     return true;
 }
 
+// 声卡回环捕获：抓某个输出设备上正在播放的声音（Win10 也支持，无需 20348）
+bool AudioEngine::startCaptureDevice(const std::wstring& deviceId, const std::wstring& label) {
+    stopCapture();
+    if (deviceId.empty()) return false;
+    capPid_ = 0;
+    capDevId_ = deviceId;
+    {
+        std::lock_guard<std::mutex> lk(titleMtx_);
+        capLabel_ = label;
+        capErr_.clear();
+    }
+    capturing_ = true;
+    capQuit_ = false;
+    {
+        std::lock_guard<std::mutex> lk(capRingMtx_);
+        capRing_.clear();
+    }
+    thCapture_ = std::thread(&AudioEngine::captureThread, this);
+    return true;
+}
+
 void AudioEngine::stopCapture() {
     if (thCapture_.joinable()) {
         capQuit_ = true;
@@ -299,6 +327,21 @@ void AudioEngine::stopCapture() {
         std::lock_guard<std::mutex> lk(capRingMtx_);
         capRing_.clear();
     }
+}
+
+// 指定输出设备（传空串回默认设备）
+void AudioEngine::setRenderDevice(const std::wstring& id, const std::wstring& name) {
+    {
+        std::lock_guard<std::mutex> lk(titleMtx_);
+        outDevIdOverride_ = id;
+        outDevNameOverride_ = name;
+    }
+    reconnect_ = true;
+}
+
+std::wstring AudioEngine::renderDeviceId() const {
+    std::lock_guard<std::mutex> lk(titleMtx_);
+    return outDevIdOverride_;
 }
 
 std::wstring AudioEngine::captureTarget() const {

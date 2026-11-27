@@ -92,7 +92,15 @@ bool AudioEngine::openRender() {
                                   __uuidof(IMMDeviceEnumerator), (void**)&en);
     if (FAILED(hr)) return false;
     IMMDevice* dev = nullptr;
-    hr = en->GetDefaultAudioEndpoint(eRender, eMultimedia, &dev);
+    std::wstring wantId;
+    {
+        std::lock_guard<std::mutex> lk(titleMtx_);
+        wantId = outDevIdOverride_;
+    }
+    // 指定了输出设备就用它（例如 VB-Cable 作为系统默认时，把声音送回真实耳机）；
+    // 打不开则退回系统默认设备，避免整机没声音。
+    if (!wantId.empty()) hr = en->GetDevice(wantId.c_str(), &dev);
+    if (!dev) hr = en->GetDefaultAudioEndpoint(eRender, eMultimedia, &dev);
     if (FAILED(hr) || !dev) { en->Release(); return false; }
 
     {
@@ -171,6 +179,114 @@ bool AudioEngine::openRender() {
     return true;
 }
 
+// ---------------------------------------------------------------- 测试音生成
+// dBFS → 线性幅度，顺带挡住 NaN / 超范围
+static float DbToAmp(float db) {
+    if (!(db > -120.f)) db = -120.f;
+    if (db > 0.f) db = 0.f;
+    return powf(10.f, db / 20.f);
+}
+
+// xorshift32 白噪，返回 -1..1
+static inline float WhiteNoise(TestToneState& st) {
+    uint32_t x = st.seed;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    st.seed = x;
+    return (float)((double)x * (2.0 / 4294967295.0) - 1.0);
+}
+
+// 生成一块立体声交织测试音。渲染线程独占调用。
+// 切换类型时自动复位内部状态；TT_OFF 时写静音（正常路径不会走到这里）。
+void RenderTestToneBlock(float* dst, int frames, const Settings& s, int fs, TestToneState& st) {
+    if (!dst || frames <= 0) return;
+
+    int tt = s.testTone;
+    if (tt < TT_OFF || tt > TT_SWEEP) tt = TT_OFF;      // 越界当关闭
+
+    if (tt != st.tone) {                                // 类型变了：清相位/滤波状态
+        st.reset();
+        st.tone = tt;
+    }
+    if (tt == TT_OFF) {
+        memset(dst, 0, (size_t)frames * 2 * sizeof(float));
+        return;
+    }
+
+    const double sr  = (fs > 0) ? (double)fs : 48000.0;
+    const float  amp = DbToAmp(s.testLevel);
+
+    if (tt == TT_SINE) {                                // ---- 正弦
+        double f = (double)s.testFreq;
+        if (!(f >= 1.0)) f = 1.0;
+        const double fmax = sr * 0.45;
+        if (f > fmax) f = fmax;
+        const double inc = f / sr;
+        for (int i = 0; i < frames; ++i) {
+            const float v = (float)sin(6.28318530717958647692 * st.phase) * amp;
+            st.phase += inc;
+            if (st.phase >= 1.0) st.phase -= 1.0;       // 相位连续，改频率也不爆音
+            dst[i * 2]     = v;
+            dst[i * 2 + 1] = v;
+        }
+        st.fade = 1.f;
+        return;
+    }
+
+    if (tt == TT_SWEEP) {                               // ---- 对数扫频 20Hz→20kHz
+        const double kDur    = 10.0;                    // 10 秒一轮
+        const double fadeSec = 0.02;                    // 每轮首尾 20ms 淡入淡出
+        for (int i = 0; i < frames; ++i) {
+            const double t = st.sweepT;
+            double f = 20.0 * pow(1000.0, t / kDur);    // t=0 → 20Hz, t=10 → 20kHz
+            const double fmax = sr * 0.45;
+            if (f > fmax) f = fmax;
+
+            float env = 1.f;
+            const double tin  = t;
+            const double tout = kDur - t;
+            if (tin < fadeSec) env = (float)(tin / fadeSec);
+            if (tout < fadeSec) {
+                const float e2 = (tout > 0.0) ? (float)(tout / fadeSec) : 0.f;
+                if (e2 < env) env = e2;
+            }
+            st.fade = env;
+
+            const float v = (float)sin(6.28318530717958647692 * st.phase) * amp * env;
+            st.phase += f / sr;
+            if (st.phase >= 1.0) st.phase -= 1.0;
+
+            st.sweepT = t + 1.0 / sr;
+            if (st.sweepT >= kDur) st.sweepT -= kDur;
+
+            dst[i * 2]     = v;
+            dst[i * 2 + 1] = v;
+        }
+        return;
+    }
+
+    // ---- 粉噪：Paul Kellet refined pink filter（3 级），左右声道独立
+    //     前 0.3 秒线性淡入，再乘 0.25 归一化与幅度
+    const float fadeStep = (float)(1.0 / (0.3 * sr));
+    const float norm     = 0.25f;
+    for (int i = 0; i < frames; ++i) {
+        if (st.fade < 1.f) {
+            st.fade += fadeStep;
+            if (st.fade > 1.f) st.fade = 1.f;
+        }
+        const float env = st.fade;
+        for (int c = 0; c < 2; ++c) {
+            const float w = WhiteNoise(st);
+            st.pk[c][0] = 0.99765f * st.pk[c][0] + w * 0.0990460f;
+            st.pk[c][1] = 0.96300f * st.pk[c][1] + w * 0.2965164f;
+            st.pk[c][2] = 0.57000f * st.pk[c][2] + w * 1.0526913f;
+            const float p = st.pk[c][0] + st.pk[c][1] + st.pk[c][2] + w * 0.1848f;
+            dst[i * 2 + c] = p * norm * amp * env;
+        }
+    }
+}
+
 void AudioEngine::renderThread() {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     DbgLog(L"RT start tid=%lu\n", (unsigned long)GetCurrentThreadId());
@@ -183,6 +299,8 @@ void AudioEngine::renderThread() {
     dsp_.configure(local);
 
     std::vector<float> capTmp;
+    int lastTone = TT_OFF;              // 上一块的测试音类型，用于检测切换
+    std::wstring lastIr;            // 已加载的 IR，避免重复解析
 
     while (!quit_) {
         if (!openRender()) {
@@ -200,7 +318,9 @@ void AudioEngine::renderThread() {
             if (wr != WAIT_OBJECT_0) {
                 if (++tick % 10 == 0) {
                     std::wstring id = DefaultRenderId();
-                    if (!id.empty() && !devId_.empty() && id != devId_) reconnect_ = true;
+                    std::wstring pinned;
+                    { std::lock_guard<std::mutex> lk(titleMtx_); pinned = outDevIdOverride_; }
+                    if (pinned.empty() && !id.empty() && !devId_.empty() && id != devId_) reconnect_ = true;
                 }
                 continue;
             }
@@ -208,6 +328,18 @@ void AudioEngine::renderThread() {
                 std::lock_guard<std::mutex> lk(mtx_);
                 local = params_;
                 dsp_.configure(local);
+                // IR 卷积只在音频线程里加载（dsp 内部缓冲非线程安全）
+                if (local.irOn && !local.irPath.empty() && local.irPath != lastIr) {
+                    std::wstring err;
+                    if (!dsp_.loadIr(local.irPath, &err)) {
+                        std::lock_guard<std::mutex> lk2(titleMtx_);
+                        capErr_ = err.empty() ? L"IR 载入失败" : err;
+                    }
+                    lastIr = local.irPath;
+                } else if (!local.irOn && !lastIr.empty()) {
+                    dsp_.clearIr();
+                    lastIr.clear();
+                }
             }
 
             UINT32 pad = 0;
@@ -221,21 +353,44 @@ void AudioEngine::renderThread() {
             float* dst = (float*)pData;
             memset(dst, 0, (size_t)avail * 2 * sizeof(float));
 
-            size_t got = 0;
-            {
-                std::lock_guard<std::mutex> lk(playMtx_);
-                got = playerRing_.pop(dst, avail);
+            // ----- 这一块放什么：测试音优先，开了就完全不碰播放器/捕获 ring -----
+            const int tt = local.testTone;
+            if (tt != lastTone) {
+                lastTone = tt;
+                // 进出测试音都把 ring 里的积压清掉，避免切回来时放出陈旧音频
+                {
+                    std::lock_guard<std::mutex> lk(playMtx_);
+                    playerRing_.clear();
+                }
+                {
+                    std::lock_guard<std::mutex> lk(capRingMtx_);
+                    capRing_.clear();
+                }
+                tt_.reset();
+                tt_.tone = tt;
             }
-            if (got) framesRendered_ += (long long)got;
 
-            memset(capTmp.data(), 0, (size_t)avail * 2 * sizeof(float));
-            {
-                std::lock_guard<std::mutex> lk(capRingMtx_);
-                capRing_.pop(capTmp.data(), avail);
+            size_t got = 0;
+            if (tt != TT_OFF) {
+                // 直接生成测试音，后面照常乘主音量并过 DSP（EQ/空间/压缩都能听到）
+                RenderTestToneBlock(dst, (int)avail, local, fs_.load(), tt_);
+            } else {
+                {
+                    std::lock_guard<std::mutex> lk(playMtx_);
+                    got = playerRing_.pop(dst, avail);
+                }
+                if (got) framesRendered_ += (long long)got;
+
+                memset(capTmp.data(), 0, (size_t)avail * 2 * sizeof(float));
+                {
+                    std::lock_guard<std::mutex> lk(capRingMtx_);
+                    capRing_.pop(capTmp.data(), avail);
+                }
+                for (UINT32 i = 0; i < avail * 2; ++i) dst[i] += capTmp[i];
             }
 
             const float g = masterGain_.load();
-            for (UINT32 i = 0; i < avail * 2; ++i) dst[i] = (dst[i] + capTmp[i]) * g;
+            for (UINT32 i = 0; i < avail * 2; ++i) dst[i] *= g;
 
             if (!local.bypass) {
                 dsp_.process(dst, (int)avail, 2);
@@ -251,7 +406,9 @@ void AudioEngine::renderThread() {
 
             if (++tick % 200 == 0) {
                 std::wstring id = DefaultRenderId();
-                if (!id.empty() && !devId_.empty() && id != devId_) reconnect_ = true;
+                std::wstring pinned;
+                { std::lock_guard<std::mutex> lk(titleMtx_); pinned = outDevIdOverride_; }
+                if (pinned.empty() && !id.empty() && !devId_.empty() && id != devId_) reconnect_ = true;
             }
         }
         reconnect_ = false;

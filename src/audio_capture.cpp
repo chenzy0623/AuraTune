@@ -32,15 +32,44 @@ static WAVEFORMATEXTENSIBLE CapFormat(int rate, int ch) {
 
 bool AudioEngine::openCapture(DWORD) { return true; }   // 实现在 captureThread 内
 
+// 按设备 id 激活某个「输出端点」的 IAudioClient（用于声卡回环捕获）
+static HRESULT ActivateRenderEndpoint(const std::wstring& devId, IAudioClient** out) {
+    *out = nullptr;
+    IMMDeviceEnumerator* en = nullptr;
+    HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                                  __uuidof(IMMDeviceEnumerator), (void**)&en);
+    if (FAILED(hr) || !en) return hr;
+
+    IMMDevice* dev = nullptr;
+    hr = en->GetDevice(devId.c_str(), &dev);
+    en->Release();
+    if (FAILED(hr) || !dev) return hr;
+
+    hr = dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)out);
+    dev->Release();
+    return hr;
+}
+
 void AudioEngine::captureThread() {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
-    const DWORD pid = capPid_.load();
+    const DWORD  pid    = capPid_.load();
+    std::wstring devId;
+    {
+        std::lock_guard<std::mutex> lk(titleMtx_);
+        devId = capDevId_;
+    }
+    const bool deviceMode = !devId.empty();
+
     IAudioClient* ac = nullptr;
-    HRESULT hr = ActivateProcessLoopbackClient(pid, (void**)&ac);
+    HRESULT hr = deviceMode ? ActivateRenderEndpoint(devId, &ac)
+                            : ActivateProcessLoopbackClient(pid, (void**)&ac);
     if (FAILED(hr) || !ac) {
-        wchar_t buf[160];
-        swprintf(buf, 160, L"进程回环激活失败 0x%08lX（需要 Windows 10 2004 及以上）", (unsigned long)hr);
+        wchar_t buf[200];
+        if (deviceMode)
+            swprintf(buf, 200, L"打开设备失败 0x%08lX", (unsigned long)hr);
+        else
+            swprintf(buf, 200, L"进程回环激活失败 0x%08lX（需要 Windows 10 build 20348 / Windows 11）", (unsigned long)hr);
         {
             std::lock_guard<std::mutex> lk(titleMtx_);
             capErr_ = buf;
@@ -113,7 +142,7 @@ void AudioEngine::captureThread() {
     while (!capQuit_) {
         DWORD w = WaitForSingleObject(ev, 200);
         if (w != WAIT_OBJECT_0) {
-            if (++muteTick % 10 == 0) SetProcSessionMute(pid, TRUE);
+            if (!deviceMode && (++muteTick % 10 == 0)) SetProcSessionMute(pid, TRUE);
             continue;
         }
         UINT32 packet = 0;
@@ -171,7 +200,7 @@ void AudioEngine::captureThread() {
     dc->Release();
     CloseHandle(ev);
     ac->Release();
-    SetProcSessionMute(pid, FALSE);
+    if (!deviceMode) SetProcSessionMute(pid, FALSE);   // 设备模式没有原会话要恢复
     capturing_ = false;
     CoUninitialize();
 }

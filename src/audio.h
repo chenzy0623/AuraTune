@@ -3,6 +3,7 @@
 #include "app.h"
 #include "dsp.h"
 #include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -13,6 +14,50 @@ struct MeterData {
     float bars[kSpectrumBars] = {};
     bool  playing = false, capturing = false, active = false;
 };
+
+// 正在出声的音频会话（用于音乐模式选择要处理的应用）
+struct AudioApp {
+    DWORD        pid   = 0;
+    std::wstring exe;      // 可执行文件名，如 L"QQMusic.exe"
+    std::wstring label;    // 显示名（窗口标题 / 文件名）
+    bool         active = false;   // 会话状态为 Active
+};
+
+std::vector<AudioApp> ListAudioSessions();
+// 按 exe 名找正在运行的进程 pid（0 表示没找到）
+DWORD FindProcessByExe(const std::wstring& exeName);
+
+// 输出设备（播放端点）。虚拟声卡（如 VB-Audio Virtual Cable）也在这里列出，
+// 用它做「音乐软件 → 虚拟声卡 → 本程序处理 → 真实耳机」的路由。
+struct AudioDevice {
+    std::wstring id, name;
+    bool         isDefault = false;
+};
+std::vector<AudioDevice> ListRenderDevices();
+
+// 切换「系统默认播放设备」（未公开 IPolicyConfig，Win10/11 通用）。
+// 传空串表示不改；返回是否成功。节目里用它做一键接管：系统默认 → 虚拟声卡。
+bool SetSystemDefaultRenderDevice(const std::wstring& deviceId);
+// 当前系统默认播放设备的 id（失败返回空串）
+std::wstring GetSystemDefaultRenderId();
+
+// ---------------------------------------------------------------- 测试音（Test Tone）
+// 渲染线程独占的生成器状态；切类型/关闭时 reset() 清干净，避免爆音和陈旧相位
+struct TestToneState {
+    double   phase  = 0.0;          // 正弦/扫频相位（0..1 圈）
+    double   sweepT = 0.0;          // 扫频时间 0..10 秒（double 防 float 累加漂移）
+    float    fade   = 0.f;          // 起音淡入包络 0..1
+    uint32_t seed   = 0x12345678u;  // 粉噪白噪源（xorshift32）
+    float    pk[2][4] = {};         // 粉噪滤波器状态，左右声道各一组
+    int      tone   = TT_OFF;       // 上一块的类型，用于检测切换
+    void reset() {
+        phase = 0.0; sweepT = 0.0; fade = 0.f; seed = 0x12345678u;
+        for (int c = 0; c < 2; ++c)
+            for (int i = 0; i < 4; ++i) pk[c][i] = 0.f;
+    }
+};
+// 生成一块立体声交织测试音（tt 为 TT_OFF 时写静音）；切换类型时自动复位状态
+void RenderTestToneBlock(float* dst, int frames, const Settings& s, int fs, TestToneState& st);
 
 class AudioEngine {
 public:
@@ -42,6 +87,9 @@ public:
 
     // ---- 游戏捕获 ----
     bool  startCapture(DWORD pid, const std::wstring& label);
+    // 声卡回环捕获：抓某个「输出设备」正在播放的声音（Win10 也可用）。
+    // 典型用法：音乐软件输出到 VB-Audio Cable，这里抓 Cable，再从真实耳机放出。
+    bool  startCaptureDevice(const std::wstring& deviceId, const std::wstring& label);
     void  stopCapture();
     bool  isCapturing() const { return capturing_; }
     std::wstring captureTarget() const;
@@ -49,6 +97,9 @@ public:
 
     // ---- 设备 ----
     std::wstring deviceName() const;
+    // 指定输出（渲染）设备；传空串表示回到系统默认设备。会触发重连。
+    void  setRenderDevice(const std::wstring& id, const std::wstring& name);
+    std::wstring renderDeviceId() const;
     void  requestReconnect();
     bool  deviceOk() const { return deviceOk_; }
 
@@ -140,6 +191,9 @@ private:
     std::atomic<bool>   capturing_{ false }, capQuit_{ false }, capStop_{ false };
     std::atomic<DWORD>  capPid_{ 0 };
     std::wstring        capLabel_, capErr_;
+    std::wstring        capDevId_;             // 非空 = 声卡回环模式
+    std::wstring        outDevIdOverride_;     // 非空 = 指定输出设备
+    std::wstring        outDevNameOverride_;
     void*               capClient_ = nullptr;   // IAudioClient*
 
     // 电平 / 频谱
@@ -148,4 +202,7 @@ private:
     float               fftIn_[2048] = {};
     int                 fftPos_ = 0;
     int                 fftTick_ = 0;
+
+    // 测试音生成器状态（仅渲染线程访问）
+    TestToneState       tt_;
 };
