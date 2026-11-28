@@ -33,7 +33,7 @@ static const Color COL_RED   (255, 255, 96, 96);
 enum : int {
     ID_NONE = 0, ID_MIN = 1, ID_CLOSE = 2, ID_MAX = 3, ID_FULL = 4,
     ID_SAVE = 5, ID_DEL = 6, ID_NAME = 7,
-    ID_TAB_MUSIC = 10, ID_TAB_GAME = 11, ID_TAB_MOVIE = 12,
+    ID_TAB_MUSIC = 10, ID_TAB_GAME = 11, ID_TAB_MOVIE = 12, ID_TAB_ANIME = 13,
     ID_PRESET0 = 100,
     ID_CORR = 200, ID_CORRITEM0 = 210,
     ID_EQ0 = 300,
@@ -51,6 +51,7 @@ enum : int {
     ID_SPRATE = 855, ID_SPDEPTH = 856, ID_XO = 857, ID_SUB = 858, ID_PREAMP = 859,
     ID_COMP0 = 860,            // 860..863 压缩模式
     ID_IRLOAD = 870, ID_IRCLEAR = 871, ID_IRMIX = 872,
+    ID_AUTOEQ = 925,
     ID_TT0 = 880,              // 880..883 测试音类型
     ID_TTFREQ = 885, ID_TTLEVEL = 886,
     ID_SESSPICK = 890, ID_SESS0 = 891,   // 会话下拉 891..898
@@ -68,7 +69,7 @@ struct Layout {
     int  presetRowH = 36, presetListTop = 134, presetVisible = 0, presetScroll = 0;
     bool presetTwoLine = true;
     RECT capBtn, bufBtn[3], apoBtn;
-    RECT tabMovie;
+    RECT tabMovie, tabAnime;
     RECT eqPanel, parPanel, spPanel, bassPanel, compPanel, irPanel, tonePanel;
     int  eqColW = 40; int eqTop = 0, eqBot = 0;
     int  paneH = 0;                     // 右栏总内容高（含滚出可视区的部分）
@@ -84,6 +85,7 @@ struct Layout {
     RECT spMode[4], spRate, spDepth, xo, sub, preamp;
     RECT compMode[4];
     RECT irLoad, irClear, irMix;
+    RECT autoEqBtn;
     RECT tt[4], ttFreq, ttLevel;
     RECT sessPick;
     RECT outPick;
@@ -125,6 +127,7 @@ struct App {
     int  parSel = 0;                    // 当前编辑的参量滤波器
     bool sessOpen = false;              // 会话下拉是否展开
     std::vector<AudioApp> sessions;
+    std::wstring appNow;          // 当前正在出声的应用 exe（按应用记预设用）
     DWORD sessAt = 0;
     int  devOpen = 0;                   // 0 无 / 1 输入设备 / 2 输出设备
     std::vector<AudioDevice> devs;
@@ -342,9 +345,10 @@ static void RebuildLayout(App& a) {
     Layout& L = a.lay;
     const int W = a.W, H = a.H;
     L.topbar = Rc(0, 0, W, 76);
-    L.tabMusic = Rc(232, 19, 88, 36);
-    L.tabGame  = Rc(324, 19, 88, 36);
-    L.tabMovie = Rc(416, 19, 88, 36);
+    L.tabMusic = Rc(232, 19, 84, 36);
+    L.tabGame  = Rc(320, 19, 84, 36);
+    L.tabMovie = Rc(408, 19, 84, 36);
+    L.tabAnime = Rc(496, 19, 84, 36);
     // Win10 同款顺序：最小化 → 最大化 → 关闭
     L.btnMin   = Rc(W - 138, 20, 34, 34);
     L.btnMax   = Rc(W - 96, 20, 34, 34);
@@ -451,6 +455,7 @@ static void RebuildLayout(App& a) {
         L.parFreq = Rc(cx0, L.parEdit.top + 14, cw, 12);
         L.parGain = Rc(cx0, L.parEdit.top + 28, cw, 12);
         L.parQ    = Rc(cx0, L.parEdit.top + 42, cw, 12);
+        L.autoEqBtn = Rc(L.parPanel.right - 122, L.parPanel.top + 8, 104, 22);
     }
 
     L.spPanel = card(2);
@@ -630,6 +635,26 @@ static void OpenIrDialog() {
     Toast(L"已载入 IR：" + std::wstring(fn ? fn + 1 : path));
 }
 
+// 载入 AutoEQ 档案（ParametricEQ.txt / GraphicEQ.txt）
+static void OpenAutoEqDialog() {
+    wchar_t path[MAX_PATH] = L"";
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = A.hwnd;
+    ofn.lpstrFilter = L"AutoEQ 档案 (*.txt)\0*.txt\0所有文件 (*.*)\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    ofn.lpstrTitle = L"选择 AutoEQ 的 ParametricEQ.txt 或 GraphicEQ.txt";
+    if (!GetOpenFileNameW(&ofn)) return;
+    std::wstring msg;
+    const int rc = A.settings.loadAutoEq(path, &msg);
+    if (rc != 0) { Toast(L"导入失败：" + msg); return; }
+    ApplyToEngine();
+    SaveSettings();
+    Toast(msg);
+}
+
 // 写 ini 很慢（每个键都是一次文件重写），改成延迟合并写，避免调参/切模式时卡顿
 static void SaveSettings() {
     A.saveDirty = true;
@@ -687,7 +712,8 @@ static void SwitchMode(int mode) {
     if (A.settings.mode == mode) return;
     A.settings.mode = mode;
     int idx = (mode == MODE_MUSIC) ? A.settings.presetMusic
-            : (mode == MODE_MOVIE ? A.settings.presetMovie : A.settings.presetGame);
+            : (mode == MODE_MOVIE ? A.settings.presetMovie
+            : (mode == MODE_ANIME ? A.settings.presetAnime : A.settings.presetGame));
     // 防止 ini 里的预设下标属于另一个模式（会导致切模式后又被拉回去）
     if (idx < 0 || idx >= kPresetCount || kPresets[idx].mode != mode)
         idx = FirstPresetOfMode(mode);
@@ -723,6 +749,8 @@ static void SwitchMode(int mode) {
 
 static void ApplyPresetIndex(int idx) {
     A.settings.applyPreset(idx);
+    // 记住「这个应用用这条曲线」，下次它一出声自动套回来（Enhanced EQ 的 per-app profiles）
+    if (A.settings.perAppOn && !A.appNow.empty()) A.settings.setAppPreset(A.appNow, idx);
     ApplyToEngine();
     SaveSettings();
     InvalidateRect(A.hwnd, nullptr, FALSE);
@@ -914,7 +942,8 @@ static void Paint(App& a) {
         }
         Text(gr, L"AuraTune", a.fTitle, Rc(24, 10, 220, 30), COL_TEXT);
         Text(gr, s.mode == MODE_GAME ? L"有线耳机调音台 · 游戏引擎"
-              : (s.mode == MODE_MOVIE ? L"有线耳机调音台 · 影音引擎" : L"有线耳机调音台 · 音乐引擎"),
+              : (s.mode == MODE_MOVIE ? L"有线耳机调音台 · 影音引擎"
+              : (s.mode == MODE_ANIME ? L"有线耳机调音台 · 番剧引擎" : L"有线耳机调音台 · 音乐引擎")),
              a.fTiny, Rc(24, 40, 300, 20), COL_DIM);
 
         {
@@ -926,6 +955,7 @@ static void Paint(App& a) {
             tab(L.tabMusic, ID_TAB_MUSIC, L"音乐", s.mode == MODE_MUSIC);
             tab(L.tabGame,  ID_TAB_GAME,  L"游戏", s.mode == MODE_GAME);
             tab(L.tabMovie, ID_TAB_MOVIE, L"电影", s.mode == MODE_MOVIE);
+            tab(L.tabAnime, ID_TAB_ANIME, L"动漫", s.mode == MODE_ANIME);
         }
 
         {
@@ -972,7 +1002,9 @@ static void Paint(App& a) {
         }
 
         // ---------------- 预设（内置 + 自定义，自适应行高 + 溢出滚动）
-        Panel(gr, L.presetPanel, s.mode == MODE_GAME ? L"游戏预设 / 曲线" : (s.mode == MODE_MOVIE ? L"电影预设 / 曲线" : L"音乐预设 / 曲线"));
+        Panel(gr, L.presetPanel, s.mode == MODE_GAME ? L"游戏预设 / 曲线"
+              : (s.mode == MODE_MOVIE ? L"电影预设 / 曲线"
+              : (s.mode == MODE_ANIME ? L"动漫预设 / 曲线" : L"音乐预设 / 曲线")));
         for (int k = 0; k < L.presetVisible; ++k) {
             const int slot = k + L.presetScroll;
             const int kind = L.presetKind[slot];
@@ -1178,6 +1210,12 @@ static void Paint(App& a) {
         // ---------------- 参量均衡器
         {
             Panel(gr, L.parPanel, L"参量均衡器");
+            // 载入 AutoEQ 档案（把 8850+ 耳机档案里的参数直接搬进来）
+            FillRound(gr, L.autoEqBtn, 6, a.hot == ID_AUTOEQ ? Color(255, 44, 96, 168) : Color(255, 32, 58, 104));
+            StrokeRound(gr, L.autoEqBtn, 6, a.hot == ID_AUTOEQ ? COL_ACCENT : Color(255, 44, 58, 78));
+            Text(gr, L"载入 AutoEQ", a.fTiny, L.autoEqBtn, Color(255, 214, 226, 244),
+                 StringAlignmentCenter, StringAlignmentCenter, false);
+            Hit(ID_AUTOEQ, L.autoEqBtn);
                 for (int i = 0; i < kMaxParams; ++i) {
                     const ParamFilter& pf = s.params[i];
                     const bool sel = (a.parSel == i);
@@ -1564,6 +1602,8 @@ static void OnUp(int x, int y) {
             SwitchMode(MODE_GAME);
         } else if (id == ID_TAB_MOVIE) {
             SwitchMode(MODE_MOVIE);
+        } else if (id == ID_TAB_ANIME) {
+            SwitchMode(MODE_ANIME);
         } else if (id == ID_NAME) {
             A.nameEdit = true;
         } else if (id == ID_SAVE) {
@@ -1621,6 +1661,8 @@ static void OnUp(int x, int y) {
             SaveSettings();
         } else if (id == ID_IRLOAD) {
             OpenIrDialog();
+        } else if (id == ID_AUTOEQ) {
+            OpenAutoEqDialog();
         } else if (id == ID_IRCLEAR) {
             A.settings.irOn = false;
             A.settings.irPath.clear();
@@ -1950,6 +1992,30 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
         if (tick % 120 == 0) {
             if (A.devOpen != 0 && GetTickCount() - A.devsAt > 3000) RefreshDevices();
+            // 按应用记预设：谁在出声就用它自己的曲线
+            if (A.settings.perAppOn) {
+                std::vector<AudioApp> cur = ListAudioSessions();
+                std::wstring now;
+                for (size_t i = 0; i < cur.size(); ++i)
+                    if (cur[i].active) { now = cur[i].exe; break; }
+                if (now != A.appNow) {
+                    A.appNow = now;
+                    const int want = A.settings.findAppPreset(now);
+                    if (want >= 0 && want < kPresetCount) {
+                        const int curIdx = (A.settings.mode == MODE_MUSIC) ? A.settings.presetMusic
+                                        : (A.settings.mode == MODE_MOVIE) ? A.settings.presetMovie
+                                        : (A.settings.mode == MODE_ANIME) ? A.settings.presetAnime
+                                        : A.settings.presetGame;
+                        if (curIdx != want) {
+                            if (A.settings.mode != kPresets[want].mode) {
+                                SwitchMode(kPresets[want].mode);
+                            }
+                            ApplyPresetIndex(want);
+                            Toast(L"按应用记忆：换回「" + std::wstring(kPresets[want].name) + L"」");
+                        }
+                    }
+                }
+            }
             DWORD pid = 0;
             std::wstring gname = DetectRunningGame(&pid);
             if (gname != A.detectedGame || pid != A.detectedPid) {

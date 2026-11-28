@@ -3,6 +3,10 @@
 #include <tlhelp32.h>
 #include <cwchar>
 #include <cmath>
+#include <cstring>
+#include <cctype>
+#include <algorithm>
+#include <utility>
 
 const float kBandFreq[kBands] = { 31.f, 62.f, 125.f, 250.f, 500.f, 1000.f, 2000.f, 4000.f, 8000.f, 16000.f };
 const wchar_t* kBandLabel[kBands] = { L"31", L"62", L"125", L"250", L"500", L"1k", L"2k", L"4k", L"8k", L"16k" };
@@ -68,7 +72,9 @@ float EqGainAt(const float* eq, int count, float f) {
 // ---------------------------------------------------------------- 名称表
 const wchar_t* kParamTypeName[] = {
     L"峰值 Peak", L"低架 LowShelf", L"高架 HighShelf", L"低通 LowPass",
-    L"高通 HighPass", L"陷波 Notch", L"全通 AllPass", L"带通 BandPass" };
+    L"高通 HighPass", L"陷波 Notch", L"全通 AllPass", L"带通 BandPass",
+    L"低架 一阶", L"高架 一阶", L"低通 一阶", L"高通 一阶",
+    L"低通 LR4", L"高通 LR4", L"倾斜 Tilt" };
 const wchar_t* kCompModeName[] = { L"关闭", L"柔和", L"中等", L"强力" };
 const wchar_t* kSpatialModeName[] = { L"关闭", L"8D 环绕", L"10D 影院", L"8 字漂移" };
 const wchar_t* kTestToneName[] = { L"关闭", L"正弦", L"粉噪", L"扫频" };
@@ -145,6 +151,20 @@ const Preset kPresets[] = {
       {0.f,0.4f,0.8f,1.2f,0.8f,0.4f,0.f,0.6f,0.2f,-0.2f}, 0.4f, 2.8f, 0.4f, 1.05f, 0.22f, 5 },
     { L"动画 / 家庭", L"人声甜美、弦乐明亮，小孩和老人都听得舒服", MODE_MOVIE,
       {0.6f,1.0f,0.8f,0.6f,0.f,0.4f,0.8f,1.2f,1.4f,1.0f}, 1.0f, 1.8f, 0.8f, 1.15f, 0.18f, 1 },
+
+    // ---------------- 动漫（番剧 / 剧场版 / OP・ED 按类型分） ----------------
+    { L"热血 战斗", L"打斗与呐喊有冲击力，低频扎实不糊，招式音效更带劲", MODE_ANIME,
+      {3.0f,3.0f,1.6f,0.4f,-0.8f,0.f,0.6f,1.6f,1.4f,0.8f}, 2.8f, 1.0f, 1.0f, 1.28f, 0.45f, 2 },
+    { L"日常 治愈", L"柔和温暖，齿音不刺，看日常番长时间不累", MODE_ANIME,
+      {0.4f,0.8f,1.0f,1.2f,0.8f,0.4f,0.2f,0.4f,0.2f,0.f}, 0.8f, 2.0f, 0.4f, 1.02f, 0.18f, 5 },
+    { L"恋爱 情感", L"人声贴耳、情感细节多，主题曲和告白场面更动人", MODE_ANIME,
+      {0.6f,1.2f,1.4f,1.6f,1.0f,0.6f,0.8f,1.0f,0.4f,0.2f}, 1.0f, 2.8f, 0.6f, 1.06f, 0.20f, 5 },
+    { L"奇幻 魔法", L"高频通透、声场宽，魔法与结界场面更有包围感", MODE_ANIME,
+      {1.2f,1.6f,0.8f,0.6f,0.2f,0.4f,1.2f,1.8f,2.0f,1.6f}, 1.6f, 1.4f, 2.0f, 1.45f, 0.35f, 1 },
+    { L"偶像 音乐", L"低频有弹性、中高频发亮，Live 与插入歌更热闹", MODE_ANIME,
+      {2.4f,2.6f,1.4f,0.4f,-0.4f,0.6f,1.8f,2.4f,1.6f,1.0f}, 2.2f, 2.0f, 1.2f, 1.25f, 0.35f, 2 },
+    { L"机战 科幻", L"低频有力、细节清晰，机体与爆炸声层次分明", MODE_ANIME,
+      {2.8f,2.8f,1.2f,0.f,-1.0f,0.2f,1.0f,1.4f,1.8f,2.0f}, 2.6f, 0.8f, 1.8f, 1.40f, 0.50f, 3 },
 };
 const int kPresetCount = (int)(sizeof(kPresets) / sizeof(kPresets[0]));
 
@@ -221,6 +241,7 @@ void Settings::applyPreset(int idx) {
     width = p.width; dynamics = p.dynamics; correction = p.correction;
     if (p.mode == MODE_MUSIC) presetMusic = idx;
     else if (p.mode == MODE_MOVIE) presetMovie = idx;
+    else if (p.mode == MODE_ANIME) presetAnime = idx;
     else presetGame = idx;
     mode = p.mode;
     customSel = -1;
@@ -237,6 +258,231 @@ void Settings::setEqCount(int count) {
     for (int b = 0; b < eqCount; ++b)
         eq[b] = EqGainAt(old, oldCount, BandFreqAt(eqCount, b));
     for (int b = eqCount; b < kMaxBands; ++b) eq[b] = 0.f;
+}
+
+// ------------------------------------------------------------ AutoEQ 档案导入
+// 支持两种 AutoEQ 纯文本格式：
+//   ParametricEQ.txt :  Preamp: -6.9 dB / Filter 1: ON PK Fc 105 Hz Gain 2.4 dB Q 0.70
+//   GraphicEQ.txt    :  GraphicEQ: 20 -3.5; 21 -3.4; 25 -3.0; ... 20k -1.0
+// Freq 后面可能是 "Hz" 或 "kHz"，数值也可能带小数。解析失败就返回错误码，不破坏当前设置。
+static inline const char* SkipSpace(const char* p) { while (*p == ' ' || *p == '\t') ++p; return p; }
+
+static inline double NumAt(const char** pp) {
+    const char* p = SkipSpace(*pp);
+    char* end = nullptr;
+    double v = strtod(p, &end);
+    if (end == p) return 0.0;
+    *pp = end;
+    return v;
+}
+
+// 读 "105 Hz" / "1.05 kHz" 这类频率写法，单位缺省按 Hz
+static double FreqAt(const char** pp, bool* ok) {
+    const char* p = SkipSpace(*pp);
+    char* end = nullptr;
+    double v = strtod(p, &end);
+    if (end == p) { *ok = false; return 0.0; }
+    p = SkipSpace(end);
+    if ((p[0] == 'k' || p[0] == 'K') && (p[1] == 'H' || p[1] == 'h')) { v *= 1000.0; p += 2; }
+    else if (p[0] == 'H' || p[0] == 'h') { p += 1; }
+    if (*p == 'z' || *p == 'Z') ++p;
+    *ok = true;
+    *pp = p;
+    return v;
+}
+
+static bool StartsWithI(const char* s, const char* head) {
+    size_t n = strlen(head);
+    for (size_t i = 0; i < n; ++i) {
+        char a = (char)tolower((unsigned char)s[i]);
+        if (!a) return false;
+        if (a != (char)tolower((unsigned char)head[i])) return false;
+    }
+    return true;
+}
+
+int Settings::loadAutoEq(const std::wstring& path, std::wstring* msg) {
+    auto fail = [&](int code, const wchar_t* text) {
+        if (msg) *msg = text;
+        return code;
+    };
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return fail(1, L"打不开这个文件");
+    LARGE_INTEGER sz{};
+    if (!GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > 4 * 1024 * 1024) {
+        CloseHandle(h);
+        return fail(1, L"文件是空的或者太大（上限 4MB）");
+    }
+    std::string text((size_t)sz.QuadPart, '\0');
+    DWORD got = 0;
+    const BOOL okRead = ReadFile(h, &text[0], (DWORD)text.size(), &got, nullptr);
+    CloseHandle(h);
+    if (!okRead) return fail(1, L"读取失败");
+    text.resize(got);
+    if (text.size() >= 3 && (unsigned char)text[0] == 0xEF) text.erase(0, 3);   // UTF-8 BOM
+
+    ParamFilter next[kMaxParams];
+    int nFilter = 0;
+    float newPreamp = 0.f;
+    bool sawPreamp = false;
+
+    // GraphicEQ 会先收集点，再插值到当前段数
+    std::vector<std::pair<double, double>> pts;
+
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t nl = text.find('\n', pos);
+        if (nl == std::string::npos) nl = text.size();
+        std::string line = text.substr(pos, nl - pos);
+        pos = nl + 1;
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        const char* p = SkipSpace(line.c_str());
+
+        if (StartsWithI(p, "Preamp")) {
+            p += 6;
+            if (*p == ':') ++p;
+            newPreamp = (float)NumAt(&p);
+            sawPreamp = true;
+            continue;
+        }
+        if (StartsWithI(p, "GraphicEQ")) {
+            p += 9;
+            if (*p == ':') ++p;
+            while (*p) {
+                bool ok1 = false, ok2 = false;
+                double f = FreqAt(&p, &ok1);
+                double g = NumAt(&p);
+                ok2 = true;
+                if (ok1 && f > 0.0) pts.push_back({ f, g });
+                (void)ok2;
+                while (*p && *p != ';') ++p;
+                if (*p == ';') ++p;
+            }
+            continue;
+        }
+        if (StartsWithI(p, "Filter")) {
+            p += 6;
+            // 真实写法是 "Filter 1: ON PK Fc 105 Hz Gain 2.4 dB Q 0.70"，
+            // 也就是 Filter 后面先跟序号和冒号，再是 ON/OFF
+            while (*p == ' ' || *p == '\t') ++p;
+            while (*p >= '0' && *p <= '9') ++p;
+            while (*p == ' ' || *p == '\t') ++p;
+            if (*p == ':') ++p;
+            const char* q = SkipSpace(p);
+            bool on = false;
+            if (StartsWithI(q, "ON")) { on = true; q += 2; }
+            else if (StartsWithI(q, "OFF")) { q += 3; }
+            q = SkipSpace(q);
+            char type[8] = {0};
+            int ti = 0;
+            while (*q && *q != ' ' && ti < 7) type[ti++] = *q++;
+            int pt = -1;
+            if (!strcmp(type, "PK")) pt = PT_PEAK;
+            else if (!strcmp(type, "LS")) pt = PT_LOW_SHELF;
+            else if (!strcmp(type, "HS")) pt = PT_HIGH_SHELF;
+            else if (!strcmp(type, "LP")) pt = PT_LOW_PASS;
+            else if (!strcmp(type, "HP")) pt = PT_HIGH_PASS;
+            else if (!strcmp(type, "BP")) pt = PT_BAND_PASS;
+            else if (!strcmp(type, "NO")) pt = PT_NOTCH;
+            else if (!strcmp(type, "LSC")) pt = PT_LOW_SHELF;
+            else if (!strcmp(type, "HSC")) pt = PT_HIGH_SHELF;
+
+            double f = 0.0, g = 0.0, qv = 1.0;
+            bool haveF = false;
+            q = SkipSpace(q);
+            if (StartsWithI(q, "Fc")) {
+                q += 2;
+                bool okf = false;
+                f = FreqAt(&q, &okf);
+                haveF = okf && f > 0.0;
+            }
+            const char* gpos = strstr(q, "Gain");
+            if (gpos) {
+                const char* gp = gpos + 4;
+                g = NumAt(&gp);
+            }
+            const char* qpos = strstr(q, "Q ");
+            if (!qpos) qpos = strstr(q, "Q:");
+            if (qpos) {
+                const char* qp = qpos + 1;
+                if (*qp == ':') ++qp;
+                double v = NumAt(&qp);
+                if (v > 0.0) qv = v;
+            }
+            if (pt >= 0 && haveF && nFilter < kMaxParams) {
+                ParamFilter& pf = next[nFilter++];
+                pf.on = on;
+                pf.type = pt;
+                pf.freq = (float)f;
+                pf.gain = (float)g;
+                pf.q = (float)qv;
+            }
+            continue;
+        }
+    }
+
+    if (!pts.empty()) {
+        // GraphicEQ：把点集按对数频率插值到当前段数
+        std::sort(pts.begin(), pts.end());
+        for (int b = 0; b < eqCount; ++b) {
+            float fc = BandFreqAt(eqCount, b);
+            double g = pts.front().second;
+            for (size_t i = 0; i + 1 < pts.size(); ++i) {
+                if (fc >= pts[i].first && fc <= pts[i + 1].first) {
+                    double t = (log10(fc) - log10(pts[i].first)) /
+                               (log10(pts[i + 1].first) - log10(pts[i].first) + 1e-9);
+                    g = pts[i].second + (pts[i + 1].second - pts[i].second) * t;
+                    break;
+                }
+            }
+            if (fc < pts.front().first) g = pts.front().second;
+            if (fc > pts.back().first) g = pts.back().second;
+            eq[b] = (float)std::max(-18.0, std::min(18.0, g));
+        }
+        for (int b = eqCount; b < kMaxBands; ++b) eq[b] = 0.f;
+        if (sawPreamp) preamp = std::max(-24.f, std::min(24.f, newPreamp));
+        correction = 0;   // 导入的曲线本身就是校正结果，别再叠加内建校正
+        if (msg) {
+            wchar_t buf[160];
+            swprintf(buf, 160, L"已按 AutoEQ 图形曲线填入 %d 段（前置 %.1f dB）", eqCount, preamp);
+            *msg = buf;
+        }
+        return 0;
+    }
+
+    if (nFilter == 0) return fail(2, L"没认出格式：需要 AutoEQ 的 ParametricEQ.txt 或 GraphicEQ.txt");
+
+    for (int i = 0; i < kMaxParams; ++i) {
+        if (i < nFilter) params[i] = next[i];
+        else { params[i].on = false; }
+    }
+    if (sawPreamp) preamp = std::max(-24.f, std::min(24.f, newPreamp));
+    correction = 0;
+    if (msg) {
+        wchar_t buf[160];
+        swprintf(buf, 160, L"已载入 AutoEQ：%d 个滤波器，前置 %.1f dB", nFilter, preamp);
+        *msg = buf;
+    }
+    return 0;
+}
+
+// ------------------------------------------------------------ 按应用记预设
+int Settings::findAppPreset(const std::wstring& exe) const {
+    if (exe.empty()) return -1;
+    for (size_t i = 0; i < appExe.size() && i < appPreset.size(); ++i)
+        if (_wcsicmp(appExe[i].c_str(), exe.c_str()) == 0) return appPreset[i];
+    return -1;
+}
+
+void Settings::setAppPreset(const std::wstring& exe, int idx) {
+    if (exe.empty() || idx < 0 || idx >= kPresetCount) return;
+    for (size_t i = 0; i < appExe.size() && i < appPreset.size(); ++i) {
+        if (_wcsicmp(appExe[i].c_str(), exe.c_str()) == 0) { appPreset[i] = idx; return; }
+    }
+    if (appExe.size() >= 24) return;
+    appExe.push_back(exe);
+    appPreset.push_back(idx);
 }
 
 // ------------------------------------------------------------ 自定义曲线
@@ -283,7 +529,8 @@ int Settings::customCountOf(int m) const {
 
 void Settings::load() {
     mode          = IniInt(L"ui", L"mode", MODE_MUSIC);    presetMusic   = IniInt(L"ui", L"presetMusic", 1);
-    presetGame    = IniInt(L"ui", L"presetGame", 9);
+    presetMovie   = IniInt(L"ui", L"presetMovie", 22);
+    presetAnime   = IniInt(L"ui", L"presetAnime", 24);
     presetMovie   = IniInt(L"ui", L"presetMovie", 22);
     eqCount       = IniInt(L"dsp", L"eqCount", kBands);
     if (eqCount != 10 && eqCount != 15 && eqCount != 31) eqCount = kBands;
@@ -378,6 +625,23 @@ void Settings::load() {
         c.correction= IniInt(sec, L"correction", 0);
         customs.push_back(c);
     }
+
+    // 按应用记预设
+    perAppOn = IniInt(L"apps", L"on", 1) != 0;
+    appExe.clear();
+    appPreset.clear();
+    int nApp = IniInt(L"apps", L"count", 0);
+    if (nApp < 0) nApp = 0;
+    if (nApp > 24) nApp = 24;
+    for (int i = 0; i < nApp; ++i) {
+        wchar_t sec[16];
+        swprintf(sec, 16, L"a%d", i);
+        std::wstring e = IniStr(sec, L"exe", L"");
+        int idx = IniInt(sec, L"preset", -1);
+        if (e.empty() || idx < 0 || idx >= kPresetCount) continue;
+        appExe.push_back(e);
+        appPreset.push_back(idx);
+    }
 }
 
 void Settings::save() const {
@@ -401,6 +665,7 @@ void Settings::save() const {
     WriteFloat(L"ui", L"presetMusic", (float)presetMusic);
     WriteFloat(L"ui", L"presetGame",  (float)presetGame);
     WriteFloat(L"ui", L"presetMovie", (float)presetMovie);
+    WriteFloat(L"ui", L"presetAnime", (float)presetAnime);
     WriteFloat(L"dsp", L"eqCount", (float)eqCount);
     for (int b = 0; b < eqCount; ++b) {
         wchar_t key[16];
@@ -478,6 +743,16 @@ void Settings::save() const {
         WriteFloat(sec, L"dynamics", c.dynamics);
         WriteFloat(sec, L"crossfeed", c.crossfeed);
         WriteFloat(sec, L"correction", (float)c.correction);
+    }
+
+    // 按应用记预设
+    WriteFloat(L"apps", L"on", perAppOn ? 1.f : 0.f);
+    WriteFloat(L"apps", L"count", (float)appExe.size());
+    for (size_t i = 0; i < appExe.size() && i < appPreset.size(); ++i) {
+        wchar_t sec[16];
+        swprintf(sec, 16, L"a%d", (int)i);
+        WriteStr(sec, L"exe", appExe[i]);
+        WriteFloat(sec, L"preset", (float)appPreset[i]);
     }
 }
 

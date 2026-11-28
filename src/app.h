@@ -30,10 +30,13 @@ float EqGainAt(const float* eq, int count, float f);
 // ------------------------------------------------ 参量均衡器滤波器类型
 enum ParamType {
     PT_PEAK = 0, PT_LOW_SHELF, PT_HIGH_SHELF, PT_LOW_PASS,
-    PT_HIGH_PASS, PT_NOTCH, PT_ALL_PASS, PT_BAND_PASS
+    PT_HIGH_PASS, PT_NOTCH, PT_ALL_PASS, PT_BAND_PASS,
+    // v2.2 补齐：一阶（6dB/oct）版本、LR4 版本、倾斜
+    PT_LOW_SHELF_1, PT_HIGH_SHELF_1, PT_LOW_PASS_1, PT_HIGH_PASS_1,
+    PT_LOW_PASS_LR4, PT_HIGH_PASS_LR4, PT_TILT
 };
 extern const wchar_t* kParamTypeName[];
-constexpr int kParamTypeCount = 8;
+constexpr int kParamTypeCount = 15;
 
 struct ParamFilter {
     bool  on   = false;
@@ -56,7 +59,7 @@ enum TestTone { TT_OFF = 0, TT_SINE, TT_PINK, TT_SWEEP };
 extern const wchar_t* kTestToneName[];
 constexpr int kTestToneCount = 4;
 
-enum AppMode { MODE_MUSIC = 0, MODE_GAME = 1, MODE_MOVIE = 2 };
+enum AppMode { MODE_MUSIC = 0, MODE_GAME = 1, MODE_MOVIE = 2, MODE_ANIME = 3 };
 
 // ------------------------------------------------------- 耳机校正（AutoEq 风格目标曲线，近似值）
 struct Correction {
@@ -103,6 +106,7 @@ struct Settings {
     int   presetMusic   = 1;
     int   presetGame    = 9;
     int   presetMovie   = 22;   // 电影模式默认预设（剧情 / 文艺）
+    int   presetAnime   = 24;   // 动漫模式默认预设（番剧 对白）
     int   eqCount       = kBands;          // 10 / 15 / 31
     float eq[kMaxBands] = {0,2,1.2f,0.5f,-0.5f,0,0.8f,0.5f,0,0.5f};
     float bass          = 1.5f;
@@ -170,6 +174,17 @@ struct Settings {
     void applyPreset(int idx);
     void applyCustom(int idx);
     void setEqCount(int count);   // 切换段数并按对数频率重采样现有曲线
+
+    // 载入 AutoEQ 档案（ParametricEQ.txt / GraphicEQ.txt），返回 0 成功
+    // 返回值：0 成功；1 打不开；2 认不出格式；3 没有可用滤波器
+    int  loadAutoEq(const std::wstring& path, std::wstring* msg);
+
+    // 按应用记预设（Enhanced EQ 的 per-app profiles）：同一个播放器下次一出声就用回它的曲线
+    bool perAppOn = true;
+    std::vector<std::wstring> appExe;
+    std::vector<int>          appPreset;
+    int  findAppPreset(const std::wstring& exe) const;      // 没有返回 -1
+    void setAppPreset(const std::wstring& exe, int idx);
     int  addCustom(const std::wstring& name);     // 返回新下标
     void removeCustom(int idx);
     int  customCountOf(int mode) const;

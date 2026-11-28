@@ -34,6 +34,13 @@ struct Biquad {
     void notch   (float fs, float f, float Q);
     void allpass (float fs, float f, float Q);
     void bandpass(float fs, float f, float Q);
+
+    // 一阶（6dB/oct）版本：双线性变换（T=1/fs 归一化），b2 = a2 = 0
+    // 架式：dB 为两端增益差，DC/高频分别取 A²=10^(dB/20) 或 1
+    void lowshelf1 (float fs, float f, float dB);
+    void highshelf1(float fs, float f, float dB);
+    void lowpass1  (float fs, float f);
+    void highpass1 (float fs, float f);
 };
 
 // 立体声联动压缩器
@@ -84,6 +91,8 @@ private:
 
     // ---------------------------------------------------------- 参量 EQ
     Biquad      par_[2][kMaxParams];
+    Biquad      par2_[2][kMaxParams];   // 第二级：仅 LR4（两级 Butterworth）/ TILT（低架+高架）
+    bool        par2On_[kMaxParams] = {};   // 第二级是否参与运算（其余类型直通）
     ParamFilter lastPar_[kMaxParams];
     bool        parOn_[kMaxParams] = {};
     bool        parInit_ = false;

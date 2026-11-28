@@ -117,6 +117,59 @@ void Biquad::bandpass(float fs, float f, float Q) {   // 0dB 峰值增益
     a2 = (1.f - alpha) / a0;
 }
 
+// ---- 一阶（6dB/oct）：模拟原型经双线性变换（s = K(1-z⁻¹)/(1+z⁻¹)，K=2，T=1/fs 归一化）
+// 低架：H(s) = (s + w0·A) / (s + w0/A)，DC 增益 A²，高频 1，w0 处 A
+void Biquad::lowshelf1(float fs, float f, float dB) {
+    if (!(f > 0.f) || f >= fs * 0.49f || !std::isfinite(dB)) return;
+    const float A  = powf(10.f, dB / 40.f);
+    const float w0 = 2.f * kPi * f / fs;
+    const float K  = 2.f;
+    const float a0 = K + w0 / A;
+    b0 = (K + w0 * A) / a0;
+    b1 = (w0 * A - K) / a0;
+    b2 = 0.f;
+    a1 = (w0 / A - K) / a0;
+    a2 = 0.f;
+}
+
+// 高架：H(s) = (A·s + w0) / (s/A + w0)，DC 增益 1，高频 A²，w0 处 A
+void Biquad::highshelf1(float fs, float f, float dB) {
+    if (!(f > 0.f) || f >= fs * 0.49f || !std::isfinite(dB)) return;
+    const float A  = powf(10.f, dB / 40.f);
+    const float w0 = 2.f * kPi * f / fs;
+    const float K  = 2.f;
+    const float a0 = K / A + w0;
+    b0 = (A * K + w0) / a0;
+    b1 = (w0 - A * K) / a0;
+    b2 = 0.f;
+    a1 = (w0 - K / A) / a0;
+    a2 = 0.f;
+}
+
+void Biquad::lowpass1(float fs, float f) {
+    if (!(f > 0.f) || f >= fs * 0.49f) return;
+    const float w0 = 2.f * kPi * f / fs;
+    const float K  = 2.f;
+    const float a0 = K + w0;
+    b0 = w0 / a0;
+    b1 = w0 / a0;
+    b2 = 0.f;
+    a1 = (w0 - K) / a0;
+    a2 = 0.f;
+}
+
+void Biquad::highpass1(float fs, float f) {
+    if (!(f > 0.f) || f >= fs * 0.49f) return;
+    const float w0 = 2.f * kPi * f / fs;
+    const float K  = 2.f;
+    const float a0 = K + w0;
+    b0 = K / a0;
+    b1 = -K / a0;
+    b2 = 0.f;
+    a1 = (w0 - K) / a0;
+    a2 = 0.f;
+}
+
 // ============================================================ Compressor
 void Compressor::process(float* buf, int frames, int stride, float threshDb, float ratio,
                          float attackMs, float releaseMs, float fs) {
@@ -391,7 +444,7 @@ void DspChain::ensureIrBuffers() {
 void DspChain::resetAll() {
     for (int c = 0; c < 2; ++c) {
         for (int b = 0; b < kMaxBands; ++b)  { eq_[c][b].reset(); }
-        for (int p = 0; p < kMaxParams; ++p) { par_[c][p].reset(); }
+        for (int p = 0; p < kMaxParams; ++p) { par_[c][p].reset(); par2_[c][p].reset(); }
         bassShelf_[c].reset(); bassPeak_[c].reset(); vocalPeak_[c].reset();
         air_[c].reset();
         xfLp_[c].reset();
@@ -434,7 +487,7 @@ void DspChain::prepare(float fs) {
         ambLp_[c][1].lowpass(fs_, 6500.f, 0.6f);
         spHp_[c].highpass(fs_, 120.f, 0.7071f);
         for (int b = 0; b < kMaxBands; ++b) eq_[c][b].bypass();
-        for (int p = 0; p < kMaxParams; ++p) par_[c][p].bypass();
+        for (int p = 0; p < kMaxParams; ++p) { par_[c][p].bypass(); par2_[c][p].bypass(); }
         for (int k = 0; k < 2; ++k) { xoLo_[c][k].bypass(); xoHi_[c][k].bypass(); }
     }
     // 使 configure() 全量重算
@@ -442,7 +495,7 @@ void DspChain::prepare(float fs) {
     lastBandCount_ = 0;
     eqCount_  = kBands;
     parInit_  = false;
-    for (int p = 0; p < kMaxParams; ++p) { parOn_[p] = false; lastPar_[p] = ParamFilter(); }
+    for (int p = 0; p < kMaxParams; ++p) { parOn_[p] = false; par2On_[p] = false; lastPar_[p] = ParamFilter(); }
     xoFreq_   = -1.f;
     xoOn_     = false;
     compOn_   = false;
@@ -498,12 +551,16 @@ void DspChain::configure(const Settings& s) {
                              p.q != lastPar_[i].q;
         lastPar_[i] = p;
         parOn_[i]   = p.on;
+        par2On_[i]  = p.on && (p.type == PT_LOW_PASS_LR4 || p.type == PT_HIGH_PASS_LR4 ||
+                               p.type == PT_TILT);
         if (!changed) continue;
         for (int c = 0; c < 2; ++c) {
-            Biquad& f = par_[c][i];
-            if (!p.on) { f.bypass(); f.reset(); continue; }
+            Biquad& f  = par_[c][i];
+            Biquad& f2 = par2_[c][i];
+            if (!p.on) { f.bypass(); f.reset(); f2.bypass(); f2.reset(); continue; }
             const float ff = clampf_(p.freq, 10.f, fs_ * 0.45f);
             const float qq = clampf_(p.q, 0.05f, 20.f);
+            f2.bypass(); f2.reset();        // 缺省：第二级直通（仅 LR4 / TILT 启用）
             switch (p.type) {
                 case PT_LOW_SHELF:  f.lowshelf (fs_, ff, qq, p.gain); break;
                 case PT_HIGH_SHELF: f.highshelf(fs_, ff, qq, p.gain); break;
@@ -512,6 +569,29 @@ void DspChain::configure(const Settings& s) {
                 case PT_NOTCH:      f.notch    (fs_, ff, qq); break;
                 case PT_ALL_PASS:   f.allpass  (fs_, ff, qq); break;
                 case PT_BAND_PASS:  f.bandpass (fs_, ff, qq); break;
+                // ---- v2.2 新增：一阶（6dB/oct）----
+                case PT_LOW_SHELF_1:  f.lowshelf1 (fs_, ff, clampf_(p.gain, -36.f, 36.f)); break;
+                case PT_HIGH_SHELF_1: f.highshelf1(fs_, ff, clampf_(p.gain, -36.f, 36.f)); break;
+                case PT_LOW_PASS_1:   f.lowpass1  (fs_, ff); break;
+                case PT_HIGH_PASS_1:  f.highpass1 (fs_, ff); break;
+                // ---- v2.2 新增：LR4 = 两级二阶 Butterworth（Q=0.7071）串联 ----
+                case PT_LOW_PASS_LR4:
+                    f.lowpass (fs_, ff, 0.70710678f);
+                    f2.lowpass(fs_, ff, 0.70710678f);
+                    break;
+                case PT_HIGH_PASS_LR4:
+                    f.highpass (fs_, ff, 0.70710678f);
+                    f2.highpass(fs_, ff, 0.70710678f);
+                    break;
+                // ---- v2.2 新增：TILT = 低架(-g/2) 串 高架(+g/2)，gain 为总倾斜量（±18dB）----
+                case PT_TILT: {
+                    float g = p.gain;
+                    if (!std::isfinite(g)) g = 0.f;
+                    const float half = clampf_(g, -18.f, 18.f) * 0.5f;
+                    f .lowshelf (fs_, ff, 0.70710678f, -half);
+                    f2.highshelf(fs_, ff, 0.70710678f,  half);
+                    break;
+                }
                 case PT_PEAK:
                 default:            f.peaking (fs_, ff, qq, p.gain); break;
             }
@@ -809,11 +889,15 @@ void DspChain::process(float* buf, int frames, int stride) {
             r = eq_[1][b].run(r);
         }
 
-        // 3b. 参量 EQ
+        // 3b. 参量 EQ（par_ 为第一级；par2_ 为第二级，仅 LR4 / TILT 参与）
         for (int p = 0; p < kMaxParams; ++p) {
             if (!parOn_[p]) continue;
             l = par_[0][p].run(l);
             r = par_[1][p].run(r);
+            if (par2On_[p]) {
+                l = par2_[0][p].run(l);
+                r = par2_[1][p].run(r);
+            }
         }
 
         // 3c. 低音增强
