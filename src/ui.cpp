@@ -33,7 +33,7 @@ static const Color COL_RED   (255, 255, 96, 96);
 enum : int {
     ID_NONE = 0, ID_MIN = 1, ID_CLOSE = 2, ID_MAX = 3, ID_FULL = 4,
     ID_SAVE = 5, ID_DEL = 6, ID_NAME = 7,
-    ID_TAB_MUSIC = 10, ID_TAB_GAME = 11,
+    ID_TAB_MUSIC = 10, ID_TAB_GAME = 11, ID_TAB_MOVIE = 12,
     ID_PRESET0 = 100,
     ID_CORR = 200, ID_CORRITEM0 = 210,
     ID_EQ0 = 300,
@@ -68,8 +68,10 @@ struct Layout {
     int  presetRowH = 36, presetListTop = 134, presetVisible = 0, presetScroll = 0;
     bool presetTwoLine = true;
     RECT capBtn, bufBtn[3], apoBtn;
-    RECT eqPanel;
+    RECT tabMovie;
+    RECT eqPanel, parPanel, spPanel, bassPanel, compPanel, irPanel, tonePanel;
     int  eqColW = 40; int eqTop = 0, eqBot = 0;
+    int  paneH = 0;                     // 右栏总内容高（含滚出可视区的部分）
     RECT knobPanel, specPanel;
     RECT knob[5];
     RECT xf, volSlider;
@@ -119,6 +121,7 @@ struct App {
 
     // 音乐模式
     int  musicTab = 0;                  // 0 图形 1 参量 2 空间 3 动态
+    int  paneScroll = 0;                // 右栏纵向滚动
     int  parSel = 0;                    // 当前编辑的参量滤波器
     bool sessOpen = false;              // 会话下拉是否展开
     std::vector<AudioApp> sessions;
@@ -334,12 +337,14 @@ static void KnobDraw(Graphics& gr, const RECT& rc, float v01, const std::wstring
 }
 
 // ------------------------------------------------------------------ 布局
+static int EqCountNow();
 static void RebuildLayout(App& a) {
     Layout& L = a.lay;
     const int W = a.W, H = a.H;
     L.topbar = Rc(0, 0, W, 76);
-    L.tabMusic = Rc(232, 19, 92, 36);
-    L.tabGame  = Rc(330, 19, 92, 36);
+    L.tabMusic = Rc(232, 19, 88, 36);
+    L.tabGame  = Rc(324, 19, 88, 36);
+    L.tabMovie = Rc(416, 19, 88, 36);
     // Win10 同款顺序：最小化 → 最大化 → 关闭
     L.btnMin   = Rc(W - 138, 20, 34, 34);
     L.btnMax   = Rc(W - 96, 20, 34, 34);
@@ -360,14 +365,12 @@ static void RebuildLayout(App& a) {
         if (a.settings.customs[i].mode == a.settings.mode) { L.presetRef[n] = i; L.presetKind[n] = 1; ++n; }
     L.presetN = n;
 
-    // 左列：预设（自适应）+ 校正 + 捕获卡
-    const bool musicMode = (a.settings.mode == MODE_MUSIC);
+    // 左列：预设（自适应）+ 校正 + 音频处理卡（三种模式统一）
     const int corrH = 88;
-    const int cardH = musicMode ? ((availH >= 470) ? 190 : 176)
-                                : ((availH >= 470) ? 150 : 132);
+    const int cardH = (availH >= 470) ? 208 : 190;
     const int customRowH = 40;                 // 自定义曲线的名字框 + 保存/删除
     int presetH = availH - corrH - 12 - cardH - 12;
-    if (presetH < 120) presetH = 120;
+    if (presetH < 104) presetH = 104;
     L.presetPanel = Rc(lx, midTop, leftW, presetH);
     L.presetListTop = midTop + 40;
     {
@@ -376,7 +379,7 @@ static void RebuildLayout(App& a) {
         if (rowH > 34) rowH = 34;
         if (rowH < 20) rowH = 20;
         L.presetRowH = rowH;
-        L.presetTwoLine = (rowH >= 30);
+        L.presetTwoLine = (rowH >= 33);
         L.presetVisible = (rowH > 0) ? (listH / rowH) : 0;
         if (L.presetVisible > n) L.presetVisible = n;
         const int maxScroll = std::max(0, n - L.presetVisible);
@@ -398,83 +401,109 @@ static void RebuildLayout(App& a) {
     const int gh = std::max(96, bottomLimit - gy);
     L.gamePanel = Rc(lx, gy, leftW, gh);
 
-    if (musicMode) {
-        L.sessPick = Rc(lx + 16, gy + 38, leftW - 32, 28);
-        L.outPick  = Rc(lx + 16, gy + 70, leftW - 32, 28);
-        L.capBtn   = Rc(lx + 16, gy + 102, leftW - 32, 30);
-    } else {
-        L.capBtn   = Rc(lx + 16, gy + 64, leftW - 32, 34);
-    }
-    const int bufY = musicMode ? (gy + 136) : (gy + 106);
-    for (int i = 0; i < 3; ++i) L.bufBtn[i] = Rc(lx + 96 + i * 62, bufY, 56, 24);
-    L.apoBtn = Rc(lx + 16, bufY + (musicMode ? 28 : 34), leftW - 32, musicMode ? 20 : 26);
+    L.sessPick = Rc(lx + 16, gy + 34, leftW - 32, 28);
+    L.outPick  = Rc(lx + 16, gy + 68, leftW - 32, 28);
+    L.capBtn   = Rc(lx + 16, gy + 104, leftW - 32, 30);
+    const int bufY = gy + 142;
+    for (int i = 0; i < 3; ++i) L.bufBtn[i] = Rc(lx + 96 + i * 62, bufY, 58, 22);
+    L.apoBtn = Rc(lx + 16, bufY + 28, leftW - 32, 20);
 
     const int rx = lx + leftW + 16;
     const int rw = W - rx - 24;
 
-    int knobH = (availH >= 560) ? 152 : 132;
-    int specH = (availH >= 560) ? 168 : 124;   // 电平框加高到正常尺寸
-    int eqH = availH - knobH - specH - 24;
-    if (eqH < 210) { eqH = 210; specH = std::max(96, availH - eqH - knobH - 24); }
+    // 右栏：一条一条列在下面 —— 每个功能区一张卡，纵向堆叠，整栏可用滚轮滚动
+    static const int kSecH[9] = { 266, 232, 152, 122, 80, 112, 132, 200, 176 };
+    const int paneTop = midTop;
+    const int paneBot = bottomLimit;
+    int total = 0;
+    for (int i = 0; i < 9; ++i) total += kSecH[i] + 10;
+    total -= 10;
+    L.paneH = total;
+    const int viewH = paneBot - paneTop;
+    int maxScroll = total - viewH;
+    if (maxScroll < 0) maxScroll = 0;
+    if (a.paneScroll > maxScroll) a.paneScroll = maxScroll;
+    if (a.paneScroll < 0) a.paneScroll = 0;
 
-    L.eqPanel = Rc(rx, midTop, rw, eqH);
-    L.contentTop = L.eqPanel.top + 40;
-    L.contentBot = L.eqPanel.bottom - 10;
-    const int eqCols = musicMode ? std::max(3, a.settings.eqCount) : kBands;
-    L.eqColW  = std::max(12, (rw - 44) / eqCols);
-    L.eqTop   = musicMode ? (L.contentTop + 14) : (L.eqPanel.top + 50);
-    L.eqBot   = musicMode ? (L.contentBot - 30) : (L.eqPanel.bottom - 38);
+    int y = paneTop - a.paneScroll;
+    auto card = [&](int idx) { RECT r = Rc(rx, y, rw, kSecH[idx]); y += kSecH[idx] + 10; return r; };
 
-    if (musicMode) {
-        for (int i = 0; i < 4; ++i) L.mtab[i] = Rc(rx + 18 + i * 84, L.eqPanel.top + 8, 80, 26);
+    L.eqPanel = card(0);
+    {
+        const int cols = std::max(3, EqCountNow());
+        L.eqColW = std::max(12, (rw - 44) / cols);
+        L.eqTop = L.eqPanel.top + 46;
+        L.eqBot = L.eqPanel.bottom - 34;
+        // 段数切换放在 EQ 卡标题右侧
         for (int i = 0; i < 3; ++i)
-            L.bandSel[i] = Rc(rx + 396 + i * 54, L.eqPanel.top + 8, 50, 26);
-
-        const int cw = rw - 36, cx0 = rx + 18;
-        // 参量页
-        for (int i = 0; i < kMaxParams; ++i) {
-            L.parRow[i]  = Rc(cx0, L.contentTop + i * 22, cw, 20);
-            L.parOn[i]   = Rc(L.parRow[i].left + 4, L.parRow[i].top + 1, 18, 18);
-            L.parType[i] = Rc(L.parRow[i].left + 28, L.parRow[i].top, 100, 19);
-        }
-        L.parEdit = Rc(cx0, L.contentBot - 58, cw, 56);
-        {
-            L.parFreq = Rc(cx0, L.parEdit.top + 16, cw, 12);
-            L.parGain = Rc(cx0, L.parEdit.top + 32, cw, 12);
-            L.parQ    = Rc(cx0, L.parEdit.top + 48, cw, 12);
-        }
-        // 空间页
-        for (int i = 0; i < 4; ++i) L.spMode[i] = Rc(cx0 + i * 100, L.contentTop, 96, 26);
-        {
-            int y = L.contentTop + 38;
-            L.spRate  = Rc(cx0, y, cw, 14); y += 30;
-            L.spDepth = Rc(cx0, y, cw, 14); y += 30;
-            L.xo      = Rc(cx0, y, cw, 14); y += 30;
-            L.sub     = Rc(cx0, y, cw, 14); y += 30;
-            L.preamp  = Rc(cx0, y, cw, 14);
-        }
-        // 动态页
-        for (int i = 0; i < 4; ++i) L.compMode[i] = Rc(cx0 + i * 100, L.contentTop, 96, 26);
-        L.irLoad  = Rc(cx0, L.contentTop + 36, 108, 26);
-        L.irClear = Rc(cx0 + 116, L.contentTop + 36, 66, 26);
-        L.irMix   = Rc(cx0, L.contentTop + 68, cw, 14);
-        for (int i = 0; i < 4; ++i) L.tt[i] = Rc(cx0 + i * 100, L.contentTop + 96, 96, 26);
-        L.ttFreq  = Rc(cx0, L.contentTop + 130, cw, 14);
-        L.ttLevel = Rc(cx0, L.contentTop + 158, cw, 14);
+            L.bandSel[i] = Rc(L.eqPanel.right - 180 + i * 56, L.eqPanel.top + 8, 52, 24);
     }
 
-    L.knobPanel = Rc(rx, L.eqPanel.bottom + 12, rw, knobH);
+    L.parPanel = card(1);
+    {
+        const int cw = rw - 36, cx0 = rx + 18;
+        for (int i = 0; i < kMaxParams; ++i) {
+            L.parRow[i]  = Rc(cx0, L.parPanel.top + 34 + i * 21, cw, 19);
+            L.parOn[i]   = Rc(L.parRow[i].left + 4, L.parRow[i].top + 1, 17, 17);
+            L.parType[i] = Rc(L.parRow[i].left + 26, L.parRow[i].top, 96, 19);
+        }
+        L.parEdit = Rc(cx0, L.parPanel.bottom - 58, cw, 52);
+        L.parFreq = Rc(cx0, L.parEdit.top + 14, cw, 12);
+        L.parGain = Rc(cx0, L.parEdit.top + 28, cw, 12);
+        L.parQ    = Rc(cx0, L.parEdit.top + 42, cw, 12);
+    }
+
+    L.spPanel = card(2);
+    {
+        const int cw = rw - 36, cx0 = rx + 18;
+        for (int i = 0; i < 4; ++i) L.spMode[i] = Rc(cx0 + i * 100, L.spPanel.top + 34, 96, 26);
+        int sy = L.spPanel.top + 72;
+        L.spRate  = Rc(cx0, sy, cw, 14); sy += 22;
+        L.spDepth = Rc(cx0, sy, cw, 14); sy += 22;
+    }
+
+    L.bassPanel = card(3);
+    {
+        const int cw = rw - 36, cx0 = rx + 18;
+        int sy = L.bassPanel.top + 34;
+        L.xo     = Rc(cx0, sy, cw, 14); sy += 24;
+        L.sub    = Rc(cx0, sy, cw, 14); sy += 24;
+        L.preamp = Rc(cx0, sy, cw, 14);
+    }
+
+    L.compPanel = card(4);
+    {
+        const int cx0 = rx + 18;
+        for (int i = 0; i < 4; ++i) L.compMode[i] = Rc(cx0 + i * 100, L.compPanel.top + 32, 96, 26);
+    }
+
+    L.irPanel = card(5);
+    {
+        const int cw = rw - 36, cx0 = rx + 18;
+        L.irLoad  = Rc(cx0, L.irPanel.top + 34, 108, 26);
+        L.irClear = Rc(cx0 + 116, L.irPanel.top + 34, 66, 26);
+        L.irMix   = Rc(cx0, L.irPanel.top + 70, cw, 14);
+    }
+
+    L.tonePanel = card(6);
+    {
+        const int cw = rw - 36, cx0 = rx + 18;
+        for (int i = 0; i < 4; ++i) L.tt[i] = Rc(cx0 + i * 100, L.tonePanel.top + 34, 96, 26);
+        L.ttFreq  = Rc(cx0, L.tonePanel.top + 68, cw, 14);
+        L.ttLevel = Rc(cx0, L.tonePanel.top + 94, cw, 14);
+    }
+
+    L.knobPanel = card(7);
     {
         const int kw = rw / 5;
         for (int i = 0; i < 5; ++i)
-            L.knob[i] = Rc(rx + i * kw, L.knobPanel.top + 22, kw, knobH - 46);
-        const int by = L.knobPanel.bottom - 24;
+            L.knob[i] = Rc(rx + i * kw, L.knobPanel.top + 26, kw, 118);
+        const int by = L.knobPanel.bottom - 32;
         L.xf        = Rc(rx + 58, by, 128, 16);
         L.volSlider = Rc(rx + rw - 176, by, 160, 16);
     }
 
-    const int sy = L.knobPanel.bottom + 12;
-    L.specPanel = Rc(rx, sy, rw, std::max(56, bottomLimit - sy));
+    L.specPanel = card(8);
 }
 
 // ------------------------------------------------------------------ 应用动作
@@ -490,7 +519,7 @@ static void ApplyToEngine() {
 
 static DWORD ResolveMusicPid();
 static void SaveSettings();
-static int EqCountNow() { return (A.settings.mode == MODE_MUSIC) ? std::max(1, A.settings.eqCount) : kBands; }
+static int EqCountNow() { return std::max(3, A.settings.eqCount); }
 
 static void SetEqCount(int n) {
     if (n == A.settings.eqCount) return;
@@ -657,7 +686,8 @@ static int FirstPresetOfMode(int mode) {
 static void SwitchMode(int mode) {
     if (A.settings.mode == mode) return;
     A.settings.mode = mode;
-    int idx = (mode == MODE_MUSIC) ? A.settings.presetMusic : A.settings.presetGame;
+    int idx = (mode == MODE_MUSIC) ? A.settings.presetMusic
+            : (mode == MODE_MOVIE ? A.settings.presetMovie : A.settings.presetGame);
     // 防止 ini 里的预设下标属于另一个模式（会导致切模式后又被拉回去）
     if (idx < 0 || idx >= kPresetCount || kPresets[idx].mode != mode)
         idx = FirstPresetOfMode(mode);
@@ -676,16 +706,14 @@ static void SwitchMode(int mode) {
     A.presetScroll = 0;
     A.sessOpen = false;
     A.devOpen = 0;
-    // 换模式要换处理路径：先停旧的；音乐模式按已选的虚拟声卡路由自动恢复
+    A.paneScroll = 0;
+    // 换模式要换处理路径：先停旧的，再用已选的虚拟声卡路由恢复（三种模式同一套路由）
     if (A.capturing) {
         A.engine.stopCapture();
         A.capturing = false;
     }
-    if (mode == MODE_MUSIC && A.settings.autoCapture && !A.settings.inDevId.empty()) {
+    if (A.settings.autoCapture && !A.settings.inDevId.empty()) {
         StartMusicRoute(A.settings.inDevId, A.settings.inDevName, A.settings.outDevId, A.settings.outDevName);
-    } else if (mode != MODE_MUSIC && !A.settings.outDevId.empty()) {
-        // 游戏模式回到系统默认输出（游戏不需要经虚拟声卡）
-        A.engine.setRenderDevice(L"", L"");
     }
     ApplyToEngine();
     SaveSettings();
@@ -834,29 +862,10 @@ static void StartCaptureFor(DWORD pid, const std::wstring& label) {
 }
 
 static void ToggleCapture() {
-    if (A.capturing) {
-        if (A.settings.mode == MODE_MUSIC) { StopMusicRoute(); return; }
-        A.engine.stopCapture();
-        A.capturing = false;
-        Toast(L"已停止游戏音频处理");
-        return;
-    }
-    if (A.settings.mode == MODE_MUSIC) {
-        // 音乐模式：走虚拟声卡路由（Win10 也能实时处理）
-        if (A.settings.inDevId.empty()) { SmartRoute(); return; }
-        StartMusicRoute(A.settings.inDevId, A.settings.inDevName, A.settings.outDevId, A.settings.outDevName);
-        return;
-    }
-    if (A.detectedPid != 0) { StartCaptureFor(A.detectedPid, A.detectedGame); return; }
-    // Win10 上按进程回环不可用（需要 build 20348+），退化成虚拟声卡路由
-    if (!A.settings.inDevId.empty()) {
-        A.engine.startCaptureDevice(A.settings.inDevId, A.settings.inDevName);
-        A.capturing = A.engine.isCapturing();
-        Toast(A.capturing ? L"已从虚拟声卡捕获游戏声音（" + A.settings.inDevName + L"）"
-                          : L"捕获失败：" + A.engine.captureError());
-        return;
-    }
-    Toast(L"没有检测到游戏进程");
+    // 三种模式统一：虚拟声卡进 → DSP → 耳机出（Win10 上按进程回环不可用）
+    if (A.capturing) { StopMusicRoute(); return; }
+    if (A.settings.inDevId.empty()) { SmartRoute(); return; }
+    StartMusicRoute(A.settings.inDevId, A.settings.inDevName, A.settings.outDevId, A.settings.outDevName);
 }
 
 // ------------------------------------------------------------------ 绘制
@@ -904,16 +913,20 @@ static void Paint(App& a) {
             FillRectC(gr, Color(255, 28, 35, 48), 0.f, 75.f, (REAL)a.W, 1.f);
         }
         Text(gr, L"AuraTune", a.fTitle, Rc(24, 10, 220, 30), COL_TEXT);
-        Text(gr, game ? L"有线耳机调音台 · 游戏引擎" : L"有线耳机调音台 · 音乐引擎",
+        Text(gr, s.mode == MODE_GAME ? L"有线耳机调音台 · 游戏引擎"
+              : (s.mode == MODE_MOVIE ? L"有线耳机调音台 · 影音引擎" : L"有线耳机调音台 · 音乐引擎"),
              a.fTiny, Rc(24, 40, 300, 20), COL_DIM);
 
-        if (!game) { FillRound(gr, L.tabMusic, 9, COL_ACCENT); Text(gr, L"音乐", a.fBold, L.tabMusic, Color(255, 255, 255, 255), StringAlignmentCenter); }
-        else Text(gr, L"音乐", a.fBody, L.tabMusic, COL_DIM, StringAlignmentCenter);
-        Hit(ID_TAB_MUSIC, L.tabMusic);
-
-        if (game) { FillRound(gr, L.tabGame, 9, COL_ACCENT); Text(gr, L"游戏", a.fBold, L.tabGame, Color(255, 255, 255, 255), StringAlignmentCenter); }
-        else Text(gr, L"游戏", a.fBody, L.tabGame, COL_DIM, StringAlignmentCenter);
-        Hit(ID_TAB_GAME, L.tabGame);
+        {
+            auto tab = [&](RECT rr, int id, const wchar_t* name, bool on) {
+                if (on) { FillRound(gr, rr, 9, COL_ACCENT); Text(gr, name, a.fBold, rr, Color(255, 255, 255, 255), StringAlignmentCenter); }
+                else Text(gr, name, a.fBody, rr, COL_DIM, StringAlignmentCenter);
+                Hit(id, rr);
+            };
+            tab(L.tabMusic, ID_TAB_MUSIC, L"音乐", s.mode == MODE_MUSIC);
+            tab(L.tabGame,  ID_TAB_GAME,  L"游戏", s.mode == MODE_GAME);
+            tab(L.tabMovie, ID_TAB_MOVIE, L"电影", s.mode == MODE_MOVIE);
+        }
 
         {
             std::wstring dev = a.engine.deviceName();
@@ -959,7 +972,7 @@ static void Paint(App& a) {
         }
 
         // ---------------- 预设（内置 + 自定义，自适应行高 + 溢出滚动）
-        Panel(gr, L.presetPanel, game ? L"游戏预设 / 曲线" : L"音乐预设 / 曲线");
+        Panel(gr, L.presetPanel, s.mode == MODE_GAME ? L"游戏预设 / 曲线" : (s.mode == MODE_MOVIE ? L"电影预设 / 曲线" : L"音乐预设 / 曲线"));
         for (int k = 0; k < L.presetVisible; ++k) {
             const int slot = k + L.presetScroll;
             const int kind = L.presetKind[slot];
@@ -989,9 +1002,9 @@ static void Paint(App& a) {
             const Color nameCol = on ? COL_TEXT : (kind == 1 ? Color(255, 168, 214, 205) : Color(255, 202, 210, 222));
             if (L.presetTwoLine) {
                 Text(gr, name, on ? a.fBold : a.fBody,
-                     Rc(rr.left + 12, rr.top + 1, W_(rr) - 24, H_(rr) / 2), nameCol);
+                     Rc(rr.left + 12, rr.top, W_(rr) - 24, 19), nameCol);
                 Text(gr, desc, a.fTiny,
-                     Rc(rr.left + 12, rr.top + H_(rr) / 2 - 2, W_(rr) - 24, H_(rr) / 2), COL_DIM);
+                     Rc(rr.left + 12, rr.top + 18, W_(rr) - 24, 15), COL_DIM);
             } else {
                 Text(gr, name, on ? a.fSmallBold : a.fSmall, rr, nameCol);
             }
@@ -1036,48 +1049,42 @@ static void Paint(App& a) {
         }
         Hit(ID_CORR, L.corrBox);
 
-        // ---------------- 左卡：音乐捕获 / 游戏捕获
-        Panel(gr, L.gamePanel, (s.mode == MODE_MUSIC) ? L"音乐音频处理" : L"游戏音频");
+        // ---------------- 左卡：音频处理（三种模式统一：虚拟声卡进 → 耳机出）
+        Panel(gr, L.gamePanel, L"音频处理（虚拟声卡 → 耳机）");
         {
-            const bool mm = (s.mode == MODE_MUSIC);
-            const int lineY = L.gamePanel.top + 36;
-            if (!mm) {
-                const std::wstring gname = a.detectedGame.empty() ? L"未检测到游戏进程" : a.detectedGame;
-                Text(gr, gname, a.fSmall, Rc(L.gamePanel.left + 16, lineY, W_(L.gamePanel) - 32, 20),
-                     a.detectedGame.empty() ? COL_DIM : COL_GOOD);
-            } else {
-                // 输入设备（虚拟声卡）与输出设备（真实耳机）各一行
-                auto pill = [&](RECT rr, int id, const std::wstring& txt, bool open) {
-                    FillRound(gr, rr, 8, open ? Color(255, 35, 43, 58) : COL_PANEL2);
-                    StrokeRound(gr, rr, 8, (a.hot == id || open) ? COL_ACCENT : COL_LINE);
-                    Text(gr, txt, a.fTiny, Rc(rr.left + 10, rr.top, W_(rr) - 30, H_(rr)),
-                         (a.hot == id || open) ? COL_ACCENT : COL_DIM, StringAlignmentNear, StringAlignmentCenter, true);
-                    Pen p(COL_DIM, 1.5f);
-                    const int ax = rr.right - 16, ay = rr.top + H_(rr) / 2;
-                    gr.DrawLine(&p, (REAL)(ax - 4), (REAL)(ay - 2), (REAL)ax, (REAL)(ay + 3));
-                    gr.DrawLine(&p, (REAL)ax, (REAL)(ay + 3), (REAL)(ax + 4), (REAL)(ay - 2));
-                    Hit(id, rr);
-                };
-                pill(L.sessPick, ID_SESSPICK,
-                     s.inDevName.empty() ? L"输入：选择虚拟声卡（CABLE Input）" : (L"输入：" + s.inDevName),
-                     a.devOpen == 1);
-                pill(L.outPick, ID_OUTPICK,
-                     s.outDevName.empty() ? L"输出：系统默认设备" : (L"输出：" + s.outDevName),
-                     a.devOpen == 2);
+            auto pill = [&](RECT rr, int id, const std::wstring& txt, bool open) {
+                FillRound(gr, rr, 8, open ? Color(255, 35, 43, 58) : COL_PANEL2);
+                StrokeRound(gr, rr, 8, (a.hot == id || open) ? COL_ACCENT : COL_LINE);
+                Text(gr, txt, a.fTiny, Rc(rr.left + 10, rr.top, W_(rr) - 30, H_(rr)),
+                     (a.hot == id || open) ? COL_ACCENT : COL_DIM, StringAlignmentNear, StringAlignmentCenter, true);
+                Pen p(COL_DIM, 1.5f);
+                const int ax = rr.right - 16, ay = rr.top + H_(rr) / 2;
+                gr.DrawLine(&p, (REAL)(ax - 4), (REAL)(ay - 2), (REAL)ax, (REAL)(ay + 3));
+                gr.DrawLine(&p, (REAL)ax, (REAL)(ay + 3), (REAL)(ax + 4), (REAL)(ay - 2));
+                Hit(id, rr);
+            };
+            pill(L.sessPick, ID_SESSPICK,
+                 s.inDevName.empty() ? L"输入：选择虚拟声卡（CABLE Input）" : (L"输入：" + s.inDevName),
+                 a.devOpen == 1);
+            pill(L.outPick, ID_OUTPICK,
+                 s.outDevName.empty() ? L"输出：系统默认设备" : (L"输出：" + s.outDevName),
+                 a.devOpen == 2);
+
+            if (s.mode == MODE_GAME) {
+                const std::wstring gname = a.detectedGame.empty() ? L"未检测到游戏" : a.detectedGame;
+                Text(gr, gname, a.fTiny, Rc(L.gamePanel.left + W_(L.gamePanel) - 150, L.gamePanel.top + 9, 134, 18),
+                     a.detectedGame.empty() ? COL_DIM : COL_GOOD, StringAlignmentFar, StringAlignmentCenter, true);
             }
 
-            const bool canCap = mm ? true : ((a.detectedPid != 0) || a.capturing);
             FillRound(gr, L.capBtn, 9,
                       a.capturing ? Color(255, 122, 46, 46)
-                                  : (canCap ? (a.hot == ID_CAP ? Color(255, 96, 156, 255) : COL_ACCENT)
-                                            : Color(255, 34, 41, 53)));
-            const wchar_t* capText = mm ? (a.capturing ? L"停止处理音乐音频" : L"开始处理音乐音频")
-                                        : (a.capturing ? L"停止处理游戏音频" : L"开始处理游戏音频");
+                                  : (a.hot == ID_CAP ? Color(255, 96, 156, 255) : COL_ACCENT));
+            const wchar_t* capText = a.capturing ? L"停止处理（声音交给耳机）" : L"开始处理（声音交给耳机）";
             Text(gr, capText, a.fBold, L.capBtn,
-                 canCap ? Color(255, 255, 255, 255) : Color(255, 110, 120, 135), StringAlignmentCenter, StringAlignmentCenter, false);
+                 Color(255, 255, 255, 255), StringAlignmentCenter, StringAlignmentCenter, false);
             Hit(ID_CAP, L.capBtn);
 
-            Text(gr, L"缓冲策略", a.fTiny, Rc(L.gamePanel.left + 16, L.bufBtn[0].top + 4, 76, 18), COL_DIM);
+            Text(gr, L"缓冲策略", a.fTiny, Rc(L.gamePanel.left + 16, L.bufBtn[0].top + 3, 76, 18), COL_DIM);
             const wchar_t* bn[3] = { L"超低", L"低", L"稳" };
             for (int i = 0; i < 3; ++i) {
                 const bool on = (a.bufMode == i);
@@ -1093,59 +1100,39 @@ static void Paint(App& a) {
             Text(gr, L"导出零延迟 APO 配置", a.fTiny, L.apoBtn,
                  a.hot == ID_APO ? COL_ACC2 : Color(255, 118, 176, 164), StringAlignmentCenter, StringAlignmentCenter, false);
             Hit(ID_APO, L.apoBtn);
-
-            if (!mm && H_(L.gamePanel) > 220) {
-                Text(gr, L"APO 在系统音频引擎内处理，", a.fTiny,
-                     Rc(L.gamePanel.left + 16, L.gamePanel.top + 194, W_(L.gamePanel) - 32, 18), COL_DIM, StringAlignmentNear, StringAlignmentNear, false);
-                Text(gr, L"网卡延迟 0ms，FPS 首选。", a.fTiny,
-                     Rc(L.gamePanel.left + 16, L.gamePanel.top + 212, W_(L.gamePanel) - 32, 18), COL_DIM, StringAlignmentNear, StringAlignmentNear, false);
-            }
         }
 
-        // ---------------- EQ（音乐模式分四页）
+        // ---------------- 图形均衡器
         {
-            const bool mm = (s.mode == MODE_MUSIC);
-            const bool graphic = (!mm || a.musicTab == 0);
-            static const wchar_t* mtabs[4] = { L"图形 EQ", L"参量 EQ", L"空间 / 低音", L"动态 / 工具" };
-            static const wchar_t* titles[4] = { L"图形均衡器", L"参量均衡器", L"空间与低音", L"动态与工具" };
-            Panel(gr, L.eqPanel, mm ? titles[a.musicTab] : L"图形均衡器");
-            if (mm) {
-                SegButtons(gr, L.mtab, mtabs, 4, a.musicTab, a.fTiny, ID_MTAB0, a.hot, a.active);
-                for (int i = 0; i < 4; ++i) Hit(ID_MTAB0 + i, L.mtab[i]);
-            }
-            if (graphic) {
-            const int n = mm ? std::max(1, s.eqCount) : kBands;
-            if (mm) {
+            // 右栏裁剪：滚动时超出可视区的卡片不能画到顶栏/底栏上
+            gr.SetClip(RectF((REAL)(L.eqPanel.left - 10), 92.f,
+                             (REAL)(W_(L.eqPanel) + 20), (REAL)(a.H - 24 - 92)));
+            Panel(gr, L.eqPanel, L"图形均衡器");
+            const int n = std::max(1, s.eqCount);
+            {
                 static const wchar_t* bnames[3] = { L"10", L"15", L"31" };
                 const int bsel = (s.eqCount == 10) ? 0 : (s.eqCount == 15 ? 1 : 2);
+                Text(gr, L"段数", a.fTiny, Rc(L.bandSel[0].left - 46, L.bandSel[0].top + 4, 42, 18),
+                     COL_DIM, StringAlignmentFar, StringAlignmentNear, false);
                 SegButtons(gr, L.bandSel, bnames, 3, bsel, a.fTiny, ID_BANDSEL0, a.hot, a.active);
                 for (int i = 0; i < 3; ++i) Hit(ID_BANDSEL0 + i, L.bandSel[i]);
             }
-            wchar_t buf[160];
-            if (mm) {
-                swprintf(buf, 160, L"%s", kCorrections[s.correction].desc);
-                Text(gr, L"段数", a.fTiny, Rc(L.bandSel[0].left - 44, L.bandSel[0].top + 4, 40, 18),
-                     COL_DIM, StringAlignmentFar, StringAlignmentNear, false);
-            } else {
-                swprintf(buf, 160, L"%s", kCorrections[s.correction].desc);
-            }
-            Text(gr, buf, a.fTiny, Rc(L.eqPanel.right - 236, L.eqPanel.top + 12, 218, 20), COL_DIM, StringAlignmentFar);
 
-            const int pad = 22;
+            const int pad = 34;
             const int top = L.eqTop, bot = L.eqBot;
             const int midY = (top + bot) / 2;
 
             for (int i = 0; i <= 4; ++i) {
                 const int y = top + (bot - top) * i / 4;
                 SolidBrush lb(Color(22, 90, 110, 150));
-                gr.FillRectangle(&lb, (REAL)(L.eqPanel.left + pad - 6), (REAL)y, (REAL)(W_(L.eqPanel) - pad * 2 + 12), 1.f);
+                gr.FillRectangle(&lb, (REAL)(L.eqPanel.left + pad - 8), (REAL)y, (REAL)(W_(L.eqPanel) - pad * 2 + 16), 1.f);
                 wchar_t db[16];
                 const int val = 12 - i * 6;
                 if (i == 0) wcscpy(db, L"+12");
                 else if (i == 4) wcscpy(db, L"-12");
                 else swprintf(db, 16, L"%+d", val);
-                Text(gr, db, a.fTiny, Rc(L.eqPanel.left + 2, y - 8, 18, 16),
-                     Color(90, 150, 165, 190), StringAlignmentCenter, StringAlignmentCenter, false);
+                Text(gr, db, a.fTiny, Rc(L.eqPanel.left + 2, y - 8, 28, 16),
+                     Color(120, 150, 165, 190), StringAlignmentFar, StringAlignmentCenter, false);
             }
 
             if (bot > top) {
@@ -1184,8 +1171,13 @@ static void Paint(App& a) {
                      COL_DIM, StringAlignmentCenter, StringAlignmentCenter, false);
                 Hit(ID_EQ0 + b, tr);
             }
-            } else if (a.musicTab == 1) {
-                // ---- 参量均衡器
+            Text(gr, kCorrections[s.correction].desc, a.fTiny,
+                 Rc(L.eqPanel.left + 116, L.eqPanel.top + 11, std::max(60, W_(L.eqPanel) - 360), 20),
+                 Color(255, 96, 106, 122), StringAlignmentNear, StringAlignmentCenter);
+        }
+        // ---------------- 参量均衡器
+        {
+            Panel(gr, L.parPanel, L"参量均衡器");
                 for (int i = 0; i < kMaxParams; ++i) {
                     const ParamFilter& pf = s.params[i];
                     const bool sel = (a.parSel == i);
@@ -1235,75 +1227,90 @@ static void Paint(App& a) {
                                           a.hot == ID_PAR_Q || a.active == ID_PAR_Q, 44);
                     Hit(ID_PAR_Q, t3);
                 }
-            } else if (a.musicTab == 2) {
-                // ---- 空间 / 低音
-                SegButtons(gr, L.spMode, kSpatialModeName, kSpatialModeCount, s.spatialMode,
-                           a.fTiny, ID_SPMODE0, a.hot, a.active);
-                for (int i = 0; i < kSpatialModeCount; ++i) Hit(ID_SPMODE0 + i, L.spMode[i]);
+        }
+        // ---------------- 空间音频
+        {
+            Panel(gr, L.spPanel, L"空间音频");
+            SegButtons(gr, L.spMode, kSpatialModeName, kSpatialModeCount, s.spatialMode,
+                       a.fTiny, ID_SPMODE0, a.hot, a.active);
+            for (int i = 0; i < kSpatialModeCount; ++i) Hit(ID_SPMODE0 + i, L.spMode[i]);
 
-                wchar_t vv[40];
-                swprintf(vv, 40, L"%.2f Hz", s.spatialRate);
-                RECT a1 = LabelSlider(gr, L.spRate, L"环绕速度", Clamp01((s.spatialRate - 0.05f) / 0.55f), vv,
-                                      a.hot == ID_SPRATE || a.active == ID_SPRATE, 96);
-                Hit(ID_SPRATE, a1);
-                swprintf(vv, 40, L"%d%%", (int)(s.spatialDepth * 100.f + 0.5f));
-                RECT a2 = LabelSlider(gr, L.spDepth, L"环绕深度", s.spatialDepth, vv,
-                                      a.hot == ID_SPDEPTH || a.active == ID_SPDEPTH, 96);
-                Hit(ID_SPDEPTH, a2);
-                swprintf(vv, 40, s.xoFreq < 40.f ? L"关闭" : L"%d Hz", (int)(s.xoFreq + 0.5f));
-                RECT a3 = LabelSlider(gr, L.xo, L"分频点", XoTo01(s.xoFreq), vv,
-                                      a.hot == ID_XO || a.active == ID_XO, 96);
-                Hit(ID_XO, a3);
-                swprintf(vv, 40, L"%+.1f dB", s.subGain);
-                RECT a4 = LabelSlider(gr, L.sub, L"低音声道", Clamp01(s.subGain / 12.f), vv,
-                                      a.hot == ID_SUB || a.active == ID_SUB, 96);
-                Hit(ID_SUB, a4);
-                swprintf(vv, 40, L"%+.1f dB", s.preamp);
-                RECT a5 = LabelSlider(gr, L.preamp, L"主增益", Clamp01((s.preamp + 12.f) / 24.f), vv,
-                                      a.hot == ID_PREAMP || a.active == ID_PREAMP, 96);
-                Hit(ID_PREAMP, a5);
+            wchar_t vv[40];
+            swprintf(vv, 40, L"%.2f Hz", s.spatialRate);
+            RECT a1 = LabelSlider(gr, L.spRate, L"环绕速度", Clamp01((s.spatialRate - 0.05f) / 0.55f), vv,
+                                  a.hot == ID_SPRATE || a.active == ID_SPRATE, 96);
+            Hit(ID_SPRATE, a1);
+            swprintf(vv, 40, L"%d%%", (int)(s.spatialDepth * 100.f + 0.5f));
+            RECT a2 = LabelSlider(gr, L.spDepth, L"环绕深度", s.spatialDepth, vv,
+                                  a.hot == ID_SPDEPTH || a.active == ID_SPDEPTH, 96);
+            Hit(ID_SPDEPTH, a2);
 
-                Text(gr, L"分频点以下的低频并成单声道送到低音声道，可当成真实低音增强。", a.fTiny,
-                     Rc(L.eqPanel.left + 30, L.preamp.top + 30, W_(L.eqPanel) - 60, 18),
-                     Color(255, 96, 106, 122), StringAlignmentNear, StringAlignmentNear, false);
-            } else {
-                // ---- 动态 / 工具
-                SegButtons(gr, L.compMode, kCompModeName, kCompModeCount, s.compMode,
-                           a.fTiny, ID_COMP0, a.hot, a.active);
-                for (int i = 0; i < kCompModeCount; ++i) Hit(ID_COMP0 + i, L.compMode[i]);
+            Text(gr, s.spatialMode == SP_OFF ? L"空间效果关闭。8D / 10D / 8 字会声像缓慢绕圈，看电影和演出更有包围感。"
+                                             : L"声像绕着头部缓慢移动；深度越大左右位移和时间差越明显。",
+                 a.fTiny, Rc(L.spPanel.left + 30, L.spDepth.top + 26, W_(L.spPanel) - 60, 18),
+                 Color(255, 96, 106, 122), StringAlignmentNear, StringAlignmentNear, false);
+        }
+        // ---------------- 低音与分频
+        {
+            Panel(gr, L.bassPanel, L"低音与分频");
+            wchar_t vv[40];
+            swprintf(vv, 40, s.xoFreq < 40.f ? L"关闭" : L"%d Hz", (int)(s.xoFreq + 0.5f));
+            RECT a3 = LabelSlider(gr, L.xo, L"分频点", XoTo01(s.xoFreq), vv,
+                                  a.hot == ID_XO || a.active == ID_XO, 96);
+            Hit(ID_XO, a3);
+            swprintf(vv, 40, L"%+.1f dB", s.subGain);
+            RECT a4 = LabelSlider(gr, L.sub, L"低音声道", Clamp01(s.subGain / 12.f), vv,
+                                  a.hot == ID_SUB || a.active == ID_SUB, 96);
+            Hit(ID_SUB, a4);
+            swprintf(vv, 40, L"%+.1f dB", s.preamp);
+            RECT a5 = LabelSlider(gr, L.preamp, L"主增益", Clamp01((s.preamp + 12.f) / 24.f), vv,
+                                  a.hot == ID_PREAMP || a.active == ID_PREAMP, 96);
+            Hit(ID_PREAMP, a5);
+        }
+        // ---------------- 压缩器
+        {
+            Panel(gr, L.compPanel, L"压缩器");
+            SegButtons(gr, L.compMode, kCompModeName, kCompModeCount, s.compMode,
+                       a.fTiny, ID_COMP0, a.hot, a.active);
+            for (int i = 0; i < kCompModeCount; ++i) Hit(ID_COMP0 + i, L.compMode[i]);
+        }
+        // ---------------- 卷积 IR
+        {
+            Panel(gr, L.irPanel, L"卷积 IR");
+            FillRound(gr, L.irLoad, 7, a.hot == ID_IRLOAD ? Color(255, 39, 68, 112) : COL_PANEL2);
+            StrokeRound(gr, L.irLoad, 7, s.irOn ? COL_ACC2 : COL_LINE);
+            Text(gr, s.irOn ? L"换 IR" : L"载入 IR", a.fTiny, L.irLoad,
+                 s.irOn ? COL_ACC2 : COL_DIM, StringAlignmentCenter, StringAlignmentCenter, false);
+            Hit(ID_IRLOAD, L.irLoad);
 
-                FillRound(gr, L.irLoad, 7, a.hot == ID_IRLOAD ? Color(255, 39, 68, 112) : COL_PANEL2);
-                StrokeRound(gr, L.irLoad, 7, s.irOn ? COL_ACC2 : COL_LINE);
-                Text(gr, s.irOn ? L"换 IR" : L"载入 IR", a.fTiny, L.irLoad,
-                     s.irOn ? COL_ACC2 : COL_DIM, StringAlignmentCenter, StringAlignmentCenter, false);
-                Hit(ID_IRLOAD, L.irLoad);
+            FillRound(gr, L.irClear, 7, a.hot == ID_IRCLEAR ? Color(255, 50, 40, 40) : COL_PANEL2);
+            StrokeRound(gr, L.irClear, 7, COL_LINE);
+            Text(gr, L"清除", a.fTiny, L.irClear, COL_DIM, StringAlignmentCenter, StringAlignmentCenter, false);
+            Hit(ID_IRCLEAR, L.irClear);
 
-                FillRound(gr, L.irClear, 7, a.hot == ID_IRCLEAR ? Color(255, 50, 40, 40) : COL_PANEL2);
-                StrokeRound(gr, L.irClear, 7, COL_LINE);
-                Text(gr, L"清除", a.fTiny, L.irClear, COL_DIM, StringAlignmentCenter, StringAlignmentCenter, false);
-                Hit(ID_IRCLEAR, L.irClear);
+            wchar_t mv[32];
+            if (!s.irOn) wcscpy(mv, L"未载入");
+            else swprintf(mv, 32, L"%d%%", (int)(s.irMix * 100.f + 0.5f));
+            RECT m1 = LabelSlider(gr, L.irMix, L"IR 混合", s.irOn ? s.irMix : 0.f, mv,
+                                  a.hot == ID_IRMIX || a.active == ID_IRMIX, 100);
+            Hit(ID_IRMIX, m1);
+        }
+        // ---------------- 测试信号
+        {
+            Panel(gr, L.tonePanel, L"测试信号");
+            SegButtons(gr, L.tt, kTestToneName, kTestToneCount, s.testTone,
+                       a.fTiny, ID_TT0, a.hot, a.active);
+            for (int i = 0; i < kTestToneCount; ++i) Hit(ID_TT0 + i, L.tt[i]);
 
-                wchar_t mv[32];
-                if (!s.irOn) wcscpy(mv, L"未载入");
-                else swprintf(mv, 32, L"%d%%", (int)(s.irMix * 100.f + 0.5f));
-                RECT m1 = LabelSlider(gr, L.irMix, L"IR 混合", s.irOn ? s.irMix : 0.f, mv,
-                                      a.hot == ID_IRMIX || a.active == ID_IRMIX, 100);
-                Hit(ID_IRMIX, m1);
-
-                SegButtons(gr, L.tt, kTestToneName, kTestToneCount, s.testTone,
-                           a.fTiny, ID_TT0, a.hot, a.active);
-                for (int i = 0; i < kTestToneCount; ++i) Hit(ID_TT0 + i, L.tt[i]);
-
-                wchar_t fv[32]; swprintf(fv, 32, L"%s", FmtFreq(s.testFreq).c_str());
-                RECT f1 = LabelSlider(gr, L.ttFreq, L"测试频率",
-                                      FreqTo01(s.testFreq), fv, a.hot == ID_TTFREQ || a.active == ID_TTFREQ, 100);
-                Hit(ID_TTFREQ, f1);
-                wchar_t lv[32]; swprintf(lv, 32, L"%.0f dB", s.testLevel);
-                RECT l1 = LabelSlider(gr, L.ttLevel, L"测试电平",
-                                      Clamp01((s.testLevel + 60.f) / 60.f), lv,
-                                      a.hot == ID_TTLEVEL || a.active == ID_TTLEVEL, 100);
-                Hit(ID_TTLEVEL, l1);
-            }
+            wchar_t fv[32]; swprintf(fv, 32, L"%s", FmtFreq(s.testFreq).c_str());
+            RECT f1 = LabelSlider(gr, L.ttFreq, L"测试频率",
+                                  FreqTo01(s.testFreq), fv, a.hot == ID_TTFREQ || a.active == ID_TTFREQ, 100);
+            Hit(ID_TTFREQ, f1);
+            wchar_t lv[32]; swprintf(lv, 32, L"%.0f dB", s.testLevel);
+            RECT l1 = LabelSlider(gr, L.ttLevel, L"测试电平",
+                                  Clamp01((s.testLevel + 60.f) / 60.f), lv,
+                                  a.hot == ID_TTLEVEL || a.active == ID_TTLEVEL, 100);
+            Hit(ID_TTLEVEL, l1);
         }
 
         // ---------------- 旋钮
@@ -1361,8 +1368,22 @@ static void Paint(App& a) {
                 if (h2 > 0) FillRectC(gr, Color(255, 54, 211, 191), (REAL)(mx - 5), (REAL)(bot - h2), 5.f, (REAL)h2);
             }
         }
+        gr.ResetClip();
 
-        // ---------------- 设备下拉（音乐模式：输入虚拟声卡 / 输出真实耳机）
+        // ---------------- 右栏滚动条（提示这一栏可以往下滚）
+        {
+            const int viewH = a.H - 24 - 92;
+            if (L.paneH > viewH) {
+                const int tx = L.eqPanel.right + 6;
+                FillRectC(gr, Color(255, 32, 40, 54), (REAL)tx, 92.f, 4.f, (REAL)viewH);
+                int th = viewH * viewH / std::max(1, L.paneH);
+                if (th < 30) th = 30;
+                const int maxS = L.paneH - viewH;
+                const int ty = 92 + (maxS > 0 ? (viewH - th) * a.paneScroll / maxS : 0);
+                FillRectC(gr, Color(255, 78, 141, 255), (REAL)tx, (REAL)ty, 4.f, (REAL)th);
+            }
+        }
+        // ---------------- 设备下拉（输入虚拟声卡 / 输出真实耳机）
         if (a.devOpen != 0) {
             const int itemH = 28;
             const RECT anchor = (a.devOpen == 1) ? L.sessPick : L.outPick;
@@ -1541,6 +1562,8 @@ static void OnUp(int x, int y) {
             SwitchMode(MODE_MUSIC);
         } else if (id == ID_TAB_GAME) {
             SwitchMode(MODE_GAME);
+        } else if (id == ID_TAB_MOVIE) {
+            SwitchMode(MODE_MOVIE);
         } else if (id == ID_NAME) {
             A.nameEdit = true;
         } else if (id == ID_SAVE) {
@@ -1574,8 +1597,6 @@ static void OnUp(int x, int y) {
             ToggleCapture();
         } else if (id == ID_APO) {
             ExportApo();
-        } else if (id >= ID_MTAB0 && id < ID_MTAB0 + 4) {
-            A.musicTab = id - ID_MTAB0;
         } else if (id >= ID_BANDSEL0 && id < ID_BANDSEL0 + 3) {
             SetEqCount(id == ID_BANDSEL0 ? 10 : (id == ID_BANDSEL0 + 1 ? 15 : 31));
         } else if (id >= ID_PARSEL0 && id < ID_PARSEL0 + kMaxParams) {
@@ -1861,6 +1882,17 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         const short dz = GET_WHEEL_DELTA_WPARAM(wParam);
         POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ScreenToClient(hwnd, &pt);
+        // 右栏：整栏纵向滚动（一条一条列在下面，放不下就滚）
+        {
+            RECT pane = Rc(A.lay.eqPanel.left - 10, 92, W_(A.lay.eqPanel) + 20, A.H - 24 - 92);
+            if (PtInRect(&pane, pt)) {
+                const int maxScroll = std::max(0, A.lay.paneH - H_(pane));
+                A.paneScroll = std::max(0, std::min(maxScroll, A.paneScroll + (dz > 0 ? -48 : 48)));
+                RebuildLayout(A);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+        }
         // 预设面板内滚动（预设放不下时）
         if (A.lay.presetN > A.lay.presetVisible && PtInRect(&A.lay.presetPanel, pt)) {
             A.presetScroll += (dz > 0 ? -1 : 1);
@@ -1869,7 +1901,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         }
         if (PtInRect(&A.lay.eqPanel, pt) && A.lay.eqBot > A.lay.eqTop && A.devOpen == 0) {
             // 均衡器区域滚轮微调：命中哪一段就调哪一段
-            const int pad = 22;
+            const int pad = 34;
             const int neq = EqCountNow();
             for (int b = 0; b < neq; ++b) {
                 RECT tr = Rc(A.lay.eqPanel.left + pad + A.lay.eqColW * b - 4, A.lay.eqTop,

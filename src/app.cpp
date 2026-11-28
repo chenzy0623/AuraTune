@@ -92,47 +92,59 @@ const int kCorrectionCount = (int)(sizeof(kCorrections) / sizeof(kCorrections[0]
 
 // 预设曲线：曲风典型频谱 + 常见有线耳机频响缺口的保守修形，全部限制在 ±4dB 内避免失真
 const Preset kPresets[] = {
-    // ---------------- 音乐 ----------------
-    { L"平直还原", L"不染色，保留录音原貌", MODE_MUSIC,
+    // ---------------- 音乐（常用预设名） ----------------
+    { L"正常", L"不加任何修饰，原汁原味", MODE_MUSIC,
       {0,0,0,0,0,0,0,0,0,0}, 0.f, 0.f, 0.f, 1.00f, 0.15f, 0 },
-    { L"R&B 暖声", L"低频厚实、人声靠前，节奏蓝调与 Urban 都对味", MODE_MUSIC,
+    { L"流行", L"低频厚一点、人声靠前，听华语流行最顺耳", MODE_MUSIC,
       {0.5f,2.0f,1.2f,0.5f,-0.5f,0.f,0.8f,0.5f,0.f,0.5f}, 1.5f, 0.5f, 0.8f, 1.08f, 0.30f, 1 },
-    { L"摇滚 冲击", L"鼓点有拳头感，吉他有砂砾质感", MODE_MUSIC,
+    { L"摇滚", L"鼓点有拳头感，吉他有砂砾质感", MODE_MUSIC,
       {1.0f,2.5f,1.5f,0.f,-1.2f,-0.5f,0.8f,2.0f,1.5f,0.8f}, 2.0f, 1.0f, 1.0f, 1.12f, 0.45f, 2 },
-    { L"迈克尔·杰克逊", L"Beat It 的鼓、Billie Jean 的贝斯都更紧实，高频有亮度", MODE_MUSIC,
-      {2.0f,2.2f,0.5f,-1.0f,0.f,0.5f,1.6f,2.2f,1.2f,0.5f}, 1.8f, 1.5f, 0.6f, 1.05f, 0.35f, 1 },
-    { L"邓紫棋 女声透亮", L"气息与齿音通透，胸腔共鸣不糊", MODE_MUSIC,
-      {0.5f,1.0f,0.f,0.5f,-0.8f,1.2f,2.4f,2.2f,1.4f,1.2f}, 0.6f, 2.0f, 1.2f, 1.06f, 0.30f, 1 },
-    { L"周杰伦 华语人声", L"咬字清晰、人声贴耳，适配《青花瓷》《搁浅》类编曲", MODE_MUSIC,
-      {0.5f,1.5f,0.8f,0.f,-1.0f,0.8f,2.0f,1.4f,0.6f,0.2f}, 1.2f, 1.6f, 0.5f, 1.04f, 0.35f, 1 },
-    { L"陶喆 复古R&B", L"模拟味的暖色中频，贝斯线更圆", MODE_MUSIC,
-      {1.0f,2.0f,-0.5f,0.6f,-0.6f,0.6f,1.2f,0.8f,0.2f,0.3f}, 2.0f, 0.8f, 0.2f, 1.02f, 0.40f, 1 },
-    { L"女声 流行向", L"通用女声流行，柔和不刺耳", MODE_MUSIC,
-      {0.5f,1.2f,0.4f,0.2f,-0.6f,1.0f,1.8f,1.2f,0.6f,0.8f}, 0.8f, 1.4f, 0.9f, 1.05f, 0.28f, 1 },
-    { L"深夜低音量", L"等响补偿：小音量下照样有低频与空气感", MODE_MUSIC,
-      {1.5f,2.5f,1.0f,0.5f,0.f,0.f,0.5f,0.8f,1.2f,1.8f}, 2.5f, 0.5f, 1.5f, 1.00f, 0.20f, 3 },
+    { L"爵士", L"温暖的中频、松弛的高频，铜管与贝斯不刺", MODE_MUSIC,
+      {1.0f,1.8f,1.0f,0.5f,-0.2f,0.f,0.5f,0.5f,0.3f,0.2f}, 1.4f, 0.6f, 0.6f, 1.02f, 0.20f, 1 },
+    { L"古典", L"平直通透，保留厅堂与弦乐的空气感", MODE_MUSIC,
+      {0.f,0.f,0.f,-0.4f,-0.4f,0.f,0.f,0.5f,0.8f,1.0f}, 0.f, 0.3f, 1.2f, 1.04f, 0.12f, 2 },
+    { L"人声", L"咬字清晰、气息贴耳，齿音不刮", MODE_MUSIC,
+      {0.5f,1.0f,0.f,0.5f,-0.8f,1.4f,2.4f,1.8f,0.8f,0.6f}, 0.6f, 2.0f, 0.8f, 1.04f, 0.28f, 1 },
+    { L"低音增强", L"下潜更深、量感更足，舞曲与 Hip-Hop 专用", MODE_MUSIC,
+      {4.0f,4.0f,2.6f,1.0f,0.f,-0.5f,-0.5f,0.f,0.f,0.f}, 3.0f, 0.f, 0.4f, 1.02f, 0.35f, 3 },
+    { L"高音增强", L"亮度与细节拉满，老录音也能听出空气感", MODE_MUSIC,
+      {-1.0f,-1.0f,-0.5f,0.f,0.f,0.f,0.8f,1.8f,2.4f,2.4f}, 0.f, 1.2f, 1.4f, 1.06f, 0.22f, 2 },
+    { L"电子", L"低频扎实、声场拉宽，适合 EDM 与合成器", MODE_MUSIC,
+      {3.0f,3.0f,1.8f,0.4f,-0.2f,0.f,0.6f,1.2f,1.2f,0.8f}, 2.4f, 0.6f, 1.2f, 1.30f, 0.40f, 1 },
 
     // ---------------- 游戏 ----------------
-    { L"FPS 脚步定向", L"压低枪炮轰鸣，抬高 2k-8k 的脚步与换弹细节", MODE_GAME,
+    { L"FPS 脚步", L"压低枪炮轰鸣，抬高 2k-8k 的脚步与换弹细节", MODE_GAME,
       {0.f,1.5f,1.0f,0.f,-1.5f,0.f,2.5f,3.5f,2.0f,0.5f}, 1.0f, 1.5f, 0.f, 1.35f, 0.50f, 0 },
-    { L"FPS 竞技均衡", L"不牺牲听感的全能竞技曲线，压缩更克制", MODE_GAME,
+    { L"FPS 竞技", L"不牺牲听感的全能竞技曲线，压缩更克制", MODE_GAME,
       {0.f,1.0f,0.5f,0.f,-1.0f,0.f,1.0f,1.5f,0.8f,0.f}, 0.5f, 0.8f, 0.f, 1.15f, 0.60f, 2 },
-    { L"二游 沉浸", L"原神/星铁/绝区零 的管弦与战斗音效更有包围感", MODE_GAME,
-      {1.0f,2.0f,1.0f,0.5f,0.f,0.5f,1.0f,1.2f,0.8f,1.5f}, 2.0f, 0.8f, 1.4f, 1.28f, 0.25f, 1 },
-    { L"二游 角色语音", L"剧情对话与角色语音更清楚，BGM 不抢戏", MODE_GAME,
-      {0.f,0.5f,0.f,-0.8f,0.5f,1.5f,2.2f,1.8f,1.0f,0.5f}, 0.f, 2.2f, 0.4f, 1.10f, 0.40f, 5 },
-    { L"通用游戏", L"轻度修形 + 限幅，长时间游玩不累耳", MODE_GAME,
+    { L"通用", L"轻度修形 + 限幅，长时间游玩不累耳", MODE_GAME,
       {0.5f,1.0f,0.5f,0.f,0.f,0.f,0.5f,0.8f,0.5f,0.f}, 0.5f, 0.5f, 0.4f, 1.05f, 0.45f, 2 },
-
-    // ---------------- 3A 单机 ----------------
-    { L"3A 剧情沉浸", L"过场与对话优先：中频贴耳、低频不轰，环境音有层次", MODE_GAME,
+    { L"二游 剧情", L"原神/星铁/绝区零 的管弦与战斗音效更有包围感", MODE_GAME,
+      {1.0f,2.0f,1.0f,0.5f,0.f,0.5f,1.0f,1.2f,0.8f,1.5f}, 2.0f, 0.8f, 1.4f, 1.28f, 0.25f, 1 },
+    { L"二游 语音", L"剧情对话与角色语音更清楚，BGM 不抢戏", MODE_GAME,
+      {0.f,0.5f,0.f,-0.8f,0.5f,1.5f,2.2f,1.8f,1.0f,0.5f}, 0.f, 2.2f, 0.4f, 1.10f, 0.40f, 5 },
+    { L"3A 剧情", L"过场与对话优先：中频贴耳、低频不轰，环境音有层次", MODE_GAME,
       {1.5f,1.2f,0.6f,0.8f,0.4f,0.8f,1.0f,0.6f,1.0f,1.6f}, 1.2f, 1.2f, 1.6f, 1.42f, 0.20f, 1 },
-    { L"3A 电影低频", L"爆炸、载具、配乐下潜更深，像影院 LFE 补了一层垫底", MODE_GAME,
-      {3.0f,3.2f,1.0f,0.2f,-0.8f,0.f,0.6f,0.8f,1.2f,1.0f}, 3.5f, 0.5f, 1.2f, 1.30f, 0.28f, 3 },
-    { L"3A 大场面动态", L"保留大动态的爆点冲击，又压住爆音，适合《战神》《GTA》《战地》", MODE_GAME,
+    { L"3A 动作", L"保留大动态的爆点冲击，又压住爆音（战神/GTA/战地）", MODE_GAME,
       {2.0f,2.4f,0.8f,0.f,-0.6f,0.4f,1.2f,1.6f,1.4f,1.2f}, 2.6f, 1.0f, 1.2f, 1.35f, 0.55f, 2 },
-    { L"3A 深夜通宵", L"深夜低音量玩：等响补偿 + 脚步与语音都留住，不吵到人", MODE_GAME,
+    { L"3A 电影", L"爆炸、载具、配乐下潜更深，像影院 LFE 补了一层垫底", MODE_GAME,
+      {3.0f,3.2f,1.0f,0.2f,-0.8f,0.f,0.6f,0.8f,1.2f,1.0f}, 3.5f, 0.5f, 1.2f, 1.30f, 0.28f, 3 },
+    { L"3A 夜间", L"深夜低音量玩：等响补偿 + 脚步与语音都留住，不吵到人", MODE_GAME,
       {1.8f,2.2f,1.2f,0.6f,0.f,0.6f,1.4f,1.4f,1.0f,1.8f}, 2.4f, 1.4f, 1.8f, 1.15f, 0.25f, 3 },
+
+    // ---------------- 电影（按类型做曲线，选一次就够） ----------------
+    { L"动作片", L"爆炸、追车、枪战都有冲击力，低频扎实不糊", MODE_MOVIE,
+      {3.0f,3.2f,1.8f,0.4f,-0.8f,0.2f,0.8f,1.2f,1.0f,0.6f}, 3.2f, 0.8f, 1.4f, 1.30f, 0.45f, 3 },
+    { L"科幻 / 太空", L"低频下潜深，高频有空气感，包围感最强", MODE_MOVIE,
+      {2.4f,2.6f,1.0f,0.f,-0.6f,0.f,0.6f,1.0f,1.6f,2.2f}, 2.4f, 0.6f, 2.2f, 1.60f, 0.30f, 1 },
+    { L"恐怖 / 惊悚", L"心跳与低频更压迫，呼吸声、脚步声更清晰", MODE_MOVIE,
+      {2.8f,2.2f,0.6f,0.2f,1.0f,1.2f,1.6f,1.2f,0.4f,0.8f}, 2.6f, 1.8f, 0.8f, 1.15f, 0.35f, 5 },
+    { L"战争片", L"炮火层次分明，爆点有冲击又不刺耳（诺兰式混音）", MODE_MOVIE,
+      {2.6f,2.4f,1.0f,-0.2f,-1.0f,0.4f,1.4f,1.6f,1.2f,0.6f}, 2.8f, 1.4f, 1.2f, 1.42f, 0.55f, 2 },
+    { L"剧情 / 文艺", L"对白最清楚，配乐垫在后面，长时间看不累", MODE_MOVIE,
+      {0.f,0.4f,0.8f,1.2f,0.8f,0.4f,0.f,0.6f,0.2f,-0.2f}, 0.4f, 2.8f, 0.4f, 1.05f, 0.22f, 5 },
+    { L"动画 / 家庭", L"人声甜美、弦乐明亮，小孩和老人都听得舒服", MODE_MOVIE,
+      {0.6f,1.0f,0.8f,0.6f,0.f,0.4f,0.8f,1.2f,1.4f,1.0f}, 1.0f, 1.8f, 0.8f, 1.15f, 0.18f, 1 },
 };
 const int kPresetCount = (int)(sizeof(kPresets) / sizeof(kPresets[0]));
 
@@ -207,7 +219,9 @@ void Settings::applyPreset(int idx) {
     for (int b = eqCount; b < kMaxBands; ++b) eq[b] = 0.f;
     bass = p.bass; vocal = p.vocal; ambience = p.ambience;
     width = p.width; dynamics = p.dynamics; correction = p.correction;
-    if (p.mode == MODE_MUSIC) presetMusic = idx; else presetGame = idx;
+    if (p.mode == MODE_MUSIC) presetMusic = idx;
+    else if (p.mode == MODE_MOVIE) presetMovie = idx;
+    else presetGame = idx;
     mode = p.mode;
     customSel = -1;
 }
@@ -270,6 +284,7 @@ int Settings::customCountOf(int m) const {
 void Settings::load() {
     mode          = IniInt(L"ui", L"mode", MODE_MUSIC);    presetMusic   = IniInt(L"ui", L"presetMusic", 1);
     presetGame    = IniInt(L"ui", L"presetGame", 9);
+    presetMovie   = IniInt(L"ui", L"presetMovie", 22);
     eqCount       = IniInt(L"dsp", L"eqCount", kBands);
     if (eqCount != 10 && eqCount != 15 && eqCount != 31) eqCount = kBands;
     for (int b = 0; b < eqCount && b < kMaxBands; ++b) {
@@ -385,6 +400,7 @@ void Settings::save() const {
     WriteFloat(L"ui", L"mode",        (float)mode);
     WriteFloat(L"ui", L"presetMusic", (float)presetMusic);
     WriteFloat(L"ui", L"presetGame",  (float)presetGame);
+    WriteFloat(L"ui", L"presetMovie", (float)presetMovie);
     WriteFloat(L"dsp", L"eqCount", (float)eqCount);
     for (int b = 0; b < eqCount; ++b) {
         wchar_t key[16];

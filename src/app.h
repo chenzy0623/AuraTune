@@ -56,7 +56,7 @@ enum TestTone { TT_OFF = 0, TT_SINE, TT_PINK, TT_SWEEP };
 extern const wchar_t* kTestToneName[];
 constexpr int kTestToneCount = 4;
 
-enum AppMode { MODE_MUSIC = 0, MODE_GAME = 1 };
+enum AppMode { MODE_MUSIC = 0, MODE_GAME = 1, MODE_MOVIE = 2 };
 
 // ------------------------------------------------------- 耳机校正（AutoEq 风格目标曲线，近似值）
 struct Correction {
@@ -102,6 +102,7 @@ struct Settings {
     int   mode          = MODE_MUSIC;
     int   presetMusic   = 1;
     int   presetGame    = 9;
+    int   presetMovie   = 22;   // 电影模式默认预设（剧情 / 文艺）
     int   eqCount       = kBands;          // 10 / 15 / 31
     float eq[kMaxBands] = {0,2,1.2f,0.5f,-0.5f,0,0.8f,0.5f,0,0.5f};
     float bass          = 1.5f;

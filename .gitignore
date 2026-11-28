@@ -4,3 +4,4 @@ build/
 *.ini
 test/*.wav
 build_asan/
+docs/n*.png
